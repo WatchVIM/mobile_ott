@@ -18,6 +18,5 @@
 
   "VAST_TAG": "",
 
-  // ✅ CMS Admin-only (used by CMS app.js)
   "CMS_API_BASE": "/api/admin"
 }
