@@ -1,0 +1,20 @@
+{
+  "MANIFEST_URL": "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/manifest.json",
+  "CATALOG_URL_FALLBACK": "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/catalog.json",
+  "LOGO_URL": "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/WatchVIM%20-%20Content/WatchVIM_New_OTT_Logo.png",
+
+  "THEME": {
+    "accent": "#e11d48",
+    "background": "#0a0a0a",
+    "gold": "#d4af37"
+  },
+
+  "SUPABASE_URL": "",
+  "SUPABASE_ANON_KEY": "",
+
+  "PAYPAL_CLIENT_ID": "",
+  "TVOD_API_BASE": "",
+  "TVOD_CHECKOUT_URL_BASE": "",
+
+  "VAST_TAG": ""
+}
