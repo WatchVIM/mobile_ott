@@ -8,7 +8,6 @@
   <!-- Tailwind (CDN) -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
-    // Tailwind base matches WatchVIM palette
     tailwind.config = {
       theme: {
         extend: {
@@ -25,7 +24,7 @@
   <!-- Mux Player web component -->
   <script type="module" src="https://cdn.jsdelivr.net/npm/@mux/mux-player@2/+esm"></script>
 
-  <!-- Google IMA SDK (VAST pre-rolls) -->
+  <!-- Optional Google IMA SDK for VAST -->
   <script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"></script>
 
   <style>
@@ -34,30 +33,19 @@
       --watch-bg:#0a0a0a;
       --watch-gold:#d4af37;
     }
-
-    body{
+    body {
       background: var(--watch-bg);
       color:#fff;
       margin:0;
       font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      min-height:100vh;
     }
-
-    /* TV focus ring (used by app.js d-pad nav) */
-    .focus-ring{
-      outline: 3px solid var(--watch-accent);
-      outline-offset: 2px;
-      border-radius: 12px;
-    }
-
-    /* Helpers to match app.js */
+    .focus-ring { outline: 3px solid var(--watch-accent); outline-offset: 2px; border-radius: 12px; }
     .row-scroll { scroll-snap-type: x mandatory; }
     .tile { scroll-snap-align: start; }
     .hidden { display:none !important; }
     .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
     .no-scrollbar::-webkit-scrollbar { display:none; }
     .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
-
     .line-clamp-1,.line-clamp-2,.line-clamp-3{
       display:-webkit-box; -webkit-box-orient:vertical; overflow:hidden;
     }
@@ -65,35 +53,13 @@
     .line-clamp-2{ -webkit-line-clamp:2; }
     .line-clamp-3{ -webkit-line-clamp:3; }
   </style>
-
-  <!-- Apply THEME early to reduce flash -->
-  <script>
-    (async () => {
-      try {
-        const res = await fetch("/config.json?t=" + Date.now(), { cache:"no-store" });
-        if (!res.ok) return;
-        const cfg = await res.json();
-        const theme = cfg.THEME || {};
-        document.documentElement.style.setProperty("--watch-accent", theme.accent || "#e11d48");
-        document.documentElement.style.setProperty("--watch-bg", theme.background || "#0a0a0a");
-        document.documentElement.style.setProperty("--watch-gold", theme.gold || "#d4af37");
-      } catch (e) {}
-    })();
-  </script>
 </head>
 
-<body class="bg-watchBlack text-white">
+<body class="min-h-screen bg-watchBlack text-white">
   <!-- App Mount -->
   <div id="app" class="min-h-screen flex flex-col"></div>
 
-  <!-- JS required -->
-  <noscript>
-    <div class="p-6 text-center">
-      WatchVIM requires JavaScript to run.
-    </div>
-  </noscript>
-
-  <!-- UPDATED Frontend SPA Logic -->
+  <!-- Frontend SPA Logic -->
   <script src="/app.js"></script>
 </body>
 </html>
