@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>WatchVIM</title>
 
-  <!-- Tailwind -->
+  <!-- Tailwind (same theme as website) -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -22,64 +22,75 @@
   </script>
 
   <!-- Mux Player -->
-  <script type="module" src="https://cdn.jsdelivr.net/npm/@mux/mux-player@2/+esm"></script>
+  <script src="https://unpkg.com/@mux/mux-player@latest"></script>
 
-  <!-- Optional Google IMA SDK (VAST preroll if tag exists) -->
+  <!-- Optional Google IMA (only used when vast tags exist) -->
   <script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"></script>
 
   <style>
-    body { background:#0a0a0a; color:#fff; margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-    .focus-ring { outline: 3px solid #e50914; outline-offset: 2px; border-radius: 12px; }
-    .row-scroll { scroll-snap-type: x mandatory; }
-    .tile { scroll-snap-align: start; }
-    .hidden { display:none !important; }
-    .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+    html, body { height: 100%; background:#0a0a0a; color:#fff; margin:0; }
     .no-scrollbar::-webkit-scrollbar { display: none; }
-    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
     .line-clamp-1, .line-clamp-2, .line-clamp-3 {
-      display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden;
+      display:-webkit-box; -webkit-box-orient:vertical; overflow:hidden;
     }
-    .line-clamp-1 { -webkit-line-clamp: 1; }
-    .line-clamp-2 { -webkit-line-clamp: 2; }
-    .line-clamp-3 { -webkit-line-clamp: 3; }
+    .line-clamp-1{ -webkit-line-clamp:1; }
+    .line-clamp-2{ -webkit-line-clamp:2; }
+    .line-clamp-3{ -webkit-line-clamp:3; }
+
+    /* TV focus ring */
+    .focus-ring { outline: 3px solid #e50914; outline-offset: 2px; border-radius: 12px; }
   </style>
 </head>
 
-<body class="min-h-screen">
-  <div id="app" class="min-h-screen flex flex-col"></div>
+<body class="bg-watchBlack text-white">
+  <div id="app"></div>
 
   <script>
+  // =========================================================
+  // WatchVIM Universal Mobile + TV App (syncs with website)
+  // - Same Manifest -> Catalog
+  // - Same schema fields
+  // - Tabs + LIVE loop
+  // - Optional Supabase auth
+  // - TVOD Rent/Buy with PayPal hooks under user_subscriptions
+  // =========================================================
   (() => {
-    // =========================================================
-    // CONFIG (matches frontend + tvod + supabase)
-    // =========================================================
+
+    // ---------- Config ----------
     const DEFAULT_CONFIG = {
       MANIFEST_URL: "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/manifest.json",
       CATALOG_URL_FALLBACK: "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/catalog.json",
       LOGO_URL: "./WatchVIM_New_OTT_Logo.png",
-
       SUPABASE_URL: "",
       SUPABASE_ANON_KEY: "",
-
-      // PayPal TVOD (public client id ok to ship)
-      PAYPAL_CLIENT_ID: "",
-      PAYPAL_CURRENCY: "USD",
-
-      // Optional VAST fallback
-      VAST_TAG: ""
+      // TVOD / PayPal
+      PAYPAL_CLIENT_ID: "",     // public client id only
+      TVOD_API_BASE: "",        // your serverless endpoint base (see notes)
+      VAST_TAG: ""              // optional global ad tag fallback
     };
 
     let CONFIG = { ...DEFAULT_CONFIG };
-    let supabase = null;
 
+    async function loadConfigJSON() {
+      try {
+        const res = await fetch("/config.json?t=" + Date.now(), { cache:"no-store" });
+        if (!res.ok) return;
+        const json = await res.json();
+        CONFIG = { ...CONFIG, ...json };
+      } catch (_) {}
+    }
+
+    // ---------- State ----------
     const state = {
       catalog: null,
       titles: [],
       byId: new Map(),
       activeTab: "Movies",
-      route: { name: "home", params: {} },
+      route: { name:"home", params:{} },
       session: null,
       user: null,
+      entitlements: new Map(),  // titleId -> { entitled: boolean, endsAt?: number }
       loop: {
         queue: [],
         index: 0,
@@ -89,164 +100,6 @@
       }
     };
 
-    async function loadConfigJSON() {
-      try {
-        const res = await fetch("/config.json?t=" + Date.now(), { cache:"no-store" });
-        if (res.ok) {
-          const json = await res.json();
-          CONFIG = { ...CONFIG, ...json };
-        }
-      } catch {
-        console.warn("No config.json found, using defaults.");
-      }
-    }
-
-    // =========================================================
-    // DATA LOAD (stable manifest → latest catalog)
-    // =========================================================
-    async function fetchCatalogFromManifest() {
-      try {
-        const mRes = await fetch(CONFIG.MANIFEST_URL + "?t=" + Date.now(), { cache:"no-store" });
-        if (!mRes.ok) throw new Error("Manifest fetch failed");
-        const manifest = await mRes.json();
-
-        const catalogUrl =
-          manifest.latestCatalogUrl ||
-          manifest.catalogUrl ||
-          CONFIG.CATALOG_URL_FALLBACK;
-
-        const cRes = await fetch(catalogUrl + "?t=" + Date.now(), { cache:"no-store" });
-        if (!cRes.ok) throw new Error("Catalog fetch failed");
-        return await cRes.json();
-      } catch (e) {
-        const cRes = await fetch(CONFIG.CATALOG_URL_FALLBACK + "?t=" + Date.now(), { cache:"no-store" });
-        if (!cRes.ok) throw e;
-        return await cRes.json();
-      }
-    }
-
-    function normalizeCatalog(catalog) {
-      const titles = catalog.titles || catalog.publishedTitles || [];
-      const byId = new Map();
-
-      titles.forEach((t) => {
-        byId.set(t.id, t);
-        if (t.type === "series") {
-          (t.seasons || []).forEach((s, si) => {
-            (s.episodes || []).forEach((ep, ei) => {
-              if (!ep.id) ep.id = `${t.id}_s${si + 1}e${ei + 1}`;
-              ep.__seriesId = t.id;
-              ep.__seasonIndex = si;
-              ep.__epIndex = ei;
-              byId.set(ep.id, ep);
-            });
-          });
-        }
-      });
-
-      return { titles, byId };
-    }
-
-    async function loadData() {
-      renderLoading();
-      state.catalog = await fetchCatalogFromManifest();
-      const norm = normalizeCatalog(state.catalog);
-      state.titles = norm.titles;
-      state.byId = norm.byId;
-
-      initLoopQueue();
-      render();
-    }
-
-    // =========================================================
-    // OPTIONAL SUPABASE AUTH
-    // =========================================================
-    function loadScript(src) {
-      return new Promise((resolve, reject) => {
-        if ([...document.scripts].some(s => s.src === src)) return resolve();
-        const s = document.createElement("script");
-        s.src = src;
-        s.onload = resolve;
-        s.onerror = reject;
-        document.head.appendChild(s);
-      });
-    }
-
-    async function initSupabaseIfPossible() {
-      if (!CONFIG.SUPABASE_URL || !CONFIG.SUPABASE_ANON_KEY) return;
-
-      await loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2");
-      supabase = window.supabase?.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
-      if (!supabase) return;
-
-      const { data } = await supabase.auth.getSession();
-      state.session = data.session || null;
-      state.user = data.session?.user || null;
-
-      supabase.auth.onAuthStateChange((_event, session) => {
-        state.session = session;
-        state.user = session?.user || null;
-        render();
-      });
-    }
-
-    async function signIn(email, password) {
-      if (!supabase) return alert("Auth not configured.");
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) alert(error.message);
-    }
-
-    async function signUp(email, password, fullName) {
-      if (!supabase) return alert("Auth not configured.");
-      const { error } = await supabase.auth.signUp({
-        email, password,
-        options: { data: { full_name: fullName || "" } }
-      });
-      if (error) alert(error.message);
-      else alert("Check your email to confirm your account.");
-    }
-
-    async function signOut() {
-      if (!supabase) return;
-      await supabase.auth.signOut();
-    }
-
-    // =========================================================
-    // ROUTER (align with frontend)
-    // =========================================================
-    function parseHash() {
-      const raw = location.hash.replace(/^#\/?/, "");
-      const [path, qs] = raw.split("?");
-      const parts = (path || "home").split("/").filter(Boolean);
-      const query = Object.fromEntries(new URLSearchParams(qs || ""));
-
-      if (parts[0] === "title" && parts[1]) return { name:"title", params:{ id: parts[1] } };
-      if (parts[0] === "series" && parts[1]) return { name:"series", params:{ id: parts[1] } };
-      if (parts[0] === "episode" && parts[1] && parts[2] && parts[3]) {
-        return { name:"episode", params:{ seriesId:parts[1], seasonIndex:parts[2], epIndex:parts[3], kind: query.kind || "content" } };
-      }
-      if (parts[0] === "watch" && parts[1]) return { name:"watch", params:{ id: parts[1], kind: query.kind || "content" } };
-      if (parts[0] === "loop") return { name:"loop", params:{} };
-      if (parts[0] === "login") return { name:"login", params:{ mode: query.mode || "login" } };
-      if (parts[0] === "profile") return { name:"profile", params:{} };
-      if (parts[0] === "search") return { name:"search", params:{} };
-
-      return { name:"home", params:{} };
-    }
-
-    function navTo(hash){ location.hash = hash; }
-
-    function setTab(tab) {
-      state.activeTab = tab;
-      if (tab === "LIVE") navTo("#/loop");
-      else navTo("#/home");
-    }
-
-    window.addEventListener("hashchange", render);
-
-    // =========================================================
-    // FILTERS / UTILS (same as frontend)
-    // =========================================================
     const TAB_FILTERS = {
       Movies: (t) => t.type === "films" || t.type === "documentaries",
       Series: (t) => t.type === "series",
@@ -258,13 +111,25 @@
       LIVE: () => false
     };
 
+    // ---------- Utils ----------
+    const $app = () => document.getElementById("app");
+
+    function isTV() {
+      const ua = navigator.userAgent.toLowerCase();
+      return (
+        ua.includes("aft") || ua.includes("smarttv") || ua.includes("tizen") ||
+        ua.includes("webos") || ua.includes("android tv") ||
+        window.innerWidth >= 1024
+      );
+    }
+
     function esc(str="") {
-      return String(str).replace(/[&<>"']/g, (m) => ({
+      return String(str).replace(/[&<>"']/g, m => ({
         "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
       }[m]));
     }
 
-    function toMins(x){
+    function toMins(x) {
       const n = Number(x);
       return Number.isFinite(n) ? n : "";
     }
@@ -289,17 +154,47 @@
     }
 
     function typeLabel(type){
-      const map = { films:"Movie", documentaries:"Documentary", series:"Series", shorts:"Short", foreign:"Foreign" };
+      const map = {
+        films:"Movie",
+        documentaries:"Documentary",
+        series:"Series",
+        shorts:"Short",
+        foreign:"Foreign"
+      };
       return map[type] || type || "Title";
     }
 
-    function isTV(){
-      const ua = navigator.userAgent.toLowerCase();
-      return (
-        ua.includes("aft") || ua.includes("smarttv") || ua.includes("tizen") ||
-        ua.includes("webos") || ua.includes("android tv") ||
-        window.innerWidth >= 1024
-      );
+    function navTo(hash){ location.hash = hash; }
+
+    function parseHash() {
+      const raw = location.hash.replace(/^#\/?/, "");
+      const [path, qs] = raw.split("?");
+      const parts = (path || "home").split("/").filter(Boolean);
+      const query = Object.fromEntries(new URLSearchParams(qs || ""));
+
+      if (parts[0] === "title" && parts[1]) return { name:"title", params:{ id:parts[1] } };
+      if (parts[0] === "series" && parts[1]) return { name:"series", params:{ id:parts[1] } };
+      if (parts[0] === "episode" && parts[1] && parts[2] && parts[3]) {
+        return { name:"episode", params:{
+          seriesId: parts[1],
+          seasonIndex: parts[2],
+          epIndex: parts[3],
+          kind: query.kind || "content"
+        }};
+      }
+      if (parts[0] === "watch" && parts[1]) {
+        return { name:"watch", params:{ id:parts[1], kind: query.kind || "content" } };
+      }
+      if (parts[0] === "loop") return { name:"loop", params:{} };
+      if (parts[0] === "login") return { name:"login", params:{ mode: query.mode || "login" } };
+      if (parts[0] === "profile") return { name:"profile", params:{} };
+      return { name:"home", params:{} };
+    }
+
+    function setTab(tab){
+      state.activeTab = tab;
+      if (tab === "LIVE") navTo("#/loop");
+      else navTo("#/home");
     }
 
     function readLastWatched(){
@@ -310,7 +205,7 @@
       localStorage.setItem("watchvim_last_watched", JSON.stringify(items.slice(0,20)));
     }
     function markWatched(titleId, progress=0){
-      const items = readLastWatched().filter((x)=>x.titleId !== titleId);
+      const items = readLastWatched().filter(x => x.titleId !== titleId);
       items.unshift({ titleId, progress, at: Date.now() });
       saveLastWatched(items);
     }
@@ -319,240 +214,276 @@
       const a = arr.slice();
       for (let i=a.length-1;i>0;i--){
         const j = Math.floor(Math.random()*(i+1));
-        [a[i],a[j]] = [a[j],a[i]];
+        [a[i],a[j]]=[a[j],a[i]];
       }
       return a;
     }
 
-    // =========================================================
-    // PAYPAL TVOD (client-side checkout) + user_subscriptions
-    // =========================================================
-    async function loadPayPalSDK() {
-      if (!CONFIG.PAYPAL_CLIENT_ID) throw new Error("Missing PAYPAL_CLIENT_ID in config.json");
-      if (window.paypal) return;
+    // ---------- Data loading (same as website) ----------
+    async function fetchCatalogFromManifest(){
+      try {
+        const mRes = await fetch(CONFIG.MANIFEST_URL + "?t=" + Date.now(), { cache:"no-store" });
+        if (!mRes.ok) throw new Error("Manifest fetch failed");
+        const manifest = await mRes.json();
 
-      const src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(CONFIG.PAYPAL_CLIENT_ID)}&currency=${encodeURIComponent(CONFIG.PAYPAL_CURRENCY || "USD")}`;
-      await loadScript(src);
+        const catalogUrl =
+          manifest.latestCatalogUrl ||
+          manifest.catalogUrl ||
+          CONFIG.CATALOG_URL_FALLBACK;
+
+        const cRes = await fetch(catalogUrl + "?t=" + Date.now(), { cache:"no-store" });
+        if (!cRes.ok) throw new Error("Catalog fetch failed");
+        return await cRes.json();
+      } catch (e){
+        const cRes = await fetch(CONFIG.CATALOG_URL_FALLBACK + "?t=" + Date.now(), { cache:"no-store" });
+        if (!cRes.ok) throw e;
+        return await cRes.json();
+      }
     }
 
-    async function ensureTVODStatus(titleId) {
-      if (!supabase || !state.user) return { hasAccess:false, sub:null };
+    function normalizeCatalog(catalog){
+      const titles = catalog.titles || catalog.publishedTitles || [];
+      const byId = new Map();
 
-      const { data, error } = await supabase
-        .from("user_subscriptions")
-        .select("*")
-        .eq("user_id", state.user.id)
-        .eq("title_id", titleId)
-        .order("created_at", { ascending:false })
-        .limit(1);
+      titles.forEach(t => {
+        byId.set(t.id, t);
+        if (t.type === "series") {
+          (t.seasons || []).forEach((s, si) => {
+            (s.episodes || []).forEach((ep, ei) => {
+              if (!ep.id) ep.id = `${t.id}_s${si+1}e${ei+1}`;
+              ep.__seriesId = t.id;
+              ep.__seasonIndex = si;
+              ep.__epIndex = ei;
+              byId.set(ep.id, ep);
+            });
+          });
+        }
+      });
 
-      if (error) {
-        console.warn("TVOD check failed:", error.message);
-        return { hasAccess:false, sub:null };
-      }
-
-      const sub = data?.[0] || null;
-      if (!sub) return { hasAccess:false, sub:null };
-
-      if (sub.status === "rent" && sub.expires_at && new Date(sub.expires_at).getTime() <= Date.now()){
-        await supabase.from("user_subscriptions").update({ status:"expired" }).eq("id", sub.id);
-        return { hasAccess:false, sub:{...sub, status:"expired"} };
-      }
-
-      if (sub.status === "buy") return { hasAccess:true, sub };
-      if (sub.status === "rent" && (!sub.expires_at || new Date(sub.expires_at).getTime() > Date.now()))
-        return { hasAccess:true, sub };
-
-      return { hasAccess:false, sub };
+      return { titles, byId };
     }
 
-    function tvodPrices(t){
-      const tvod = t.monetization?.tvod || {};
-      return {
-        enabled: !!tvod.enabled,
-        rentPrice: Number(tvod.rentPrice || tvod.priceRent || tvod.price || 3.99),
-        buyPrice: Number(tvod.buyPrice || tvod.priceBuy || 9.99),
-        rentHours: Number(tvod.rentDurationHours || tvod.rentHours || 48)
+    async function loadData(){
+      renderLoading();
+      state.catalog = await fetchCatalogFromManifest();
+      const norm = normalizeCatalog(state.catalog);
+      state.titles = norm.titles;
+      state.byId = norm.byId;
+      initLoopQueue();
+      render();
+    }
+
+    // ---------- Supabase Auth (optional, same as website) ----------
+    let supabase = null;
+
+    function loadScript(src){
+      return new Promise((resolve, reject)=>{
+        if ([...document.scripts].some(s => s.src === src)) return resolve();
+        const s = document.createElement("script");
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+
+    async function initSupabaseIfPossible(){
+      if (!CONFIG.SUPABASE_URL || !CONFIG.SUPABASE_ANON_KEY) return;
+      await loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2");
+      supabase = window.supabase?.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+      if (!supabase) return;
+
+      const { data } = await supabase.auth.getSession();
+      state.session = data.session || null;
+      state.user = data.session?.user || null;
+
+      supabase.auth.onAuthStateChange((_event, session)=>{
+        state.session = session;
+        state.user = session?.user || null;
+        render();
+      });
+    }
+
+    async function signIn(email, password){
+      if (!supabase) return alert("Auth not configured.");
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) alert(error.message);
+    }
+    async function signUp(email, password, fullName){
+      if (!supabase) return alert("Auth not configured.");
+      const { error } = await supabase.auth.signUp({
+        email, password,
+        options: { data: { full_name: fullName || "" } }
+      });
+      if (error) alert(error.message);
+      else alert("Check your email to confirm your account.");
+    }
+    async function signOut(){
+      if (!supabase) return;
+      await supabase.auth.signOut();
+    }
+
+    // ---------- TVOD Entitlements + PayPal hooks ----------
+    async function fetchEntitlement(titleId){
+      if (!CONFIG.TVOD_API_BASE || !state.session?.access_token) return null;
+      try {
+        const res = await fetch(`${CONFIG.TVOD_API_BASE}/tvod/entitlement?titleId=${encodeURIComponent(titleId)}`, {
+          headers: { "Authorization": `Bearer ${state.session.access_token}` },
+          cache: "no-store"
+        });
+        if (!res.ok) return null;
+        const json = await res.json();
+        state.entitlements.set(titleId, json);
+        return json;
+      } catch {
+        return null;
+      }
+    }
+
+    function isEntitled(titleId){
+      const ent = state.entitlements.get(titleId);
+      if (!ent) return false;
+      if (ent.entitled === true) {
+        if (!ent.endsAt) return true;
+        return Date.now() < Number(ent.endsAt);
+      }
+      return false;
+    }
+
+    async function startPayPalCheckout(title, purchaseType){
+      if (!CONFIG.PAYPAL_CLIENT_ID || !CONFIG.TVOD_API_BASE)
+        return alert("TVOD config missing (PAYPAL_CLIENT_ID / TVOD_API_BASE).");
+
+      await ensurePayPalSDK();
+
+      const mount = document.getElementById("paypalButtons");
+      if (!mount) return;
+
+      mount.innerHTML = "";
+
+      // Create order on your backend
+      const createOrder = async () => {
+        const res = await fetch(`${CONFIG.TVOD_API_BASE}/tvod/create-order`, {
+          method: "POST",
+          headers: {
+            "Content-Type":"application/json",
+            "Authorization": `Bearer ${state.session?.access_token || ""}`
+          },
+          body: JSON.stringify({
+            titleId: title.id,
+            purchaseType // "rent" | "buy"
+          })
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error || "Create order failed");
+        return json.orderId;
       };
+
+      const captureOrder = async (orderId) => {
+        const res = await fetch(`${CONFIG.TVOD_API_BASE}/tvod/capture-order`, {
+          method: "POST",
+          headers: {
+            "Content-Type":"application/json",
+            "Authorization": `Bearer ${state.session?.access_token || ""}`
+          },
+          body: JSON.stringify({ orderId })
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error || "Capture failed");
+        return json;
+      };
+
+      window.paypal.Buttons({
+        style: { layout: "vertical" },
+        createOrder: () => createOrder(),
+        onApprove: async (data) => {
+          try {
+            const result = await captureOrder(data.orderID);
+            // backend should also upsert into `user_subscriptions`
+            await fetchEntitlement(title.id);
+            closeModal();
+            alert("Purchase successful! Enjoy watching.");
+            render();
+          } catch (e) {
+            alert(e.message || "Purchase failed.");
+          }
+        },
+        onError: (err) => {
+          console.warn(err);
+          alert("PayPal error.");
+        }
+      }).render("#paypalButtons");
     }
 
-    async function openTVODModal(t){
-      if (!supabase) return alert("TVOD requires Supabase auth configured.");
-      if (!state.user) return navTo("#/login?mode=login");
+    async function ensurePayPalSDK(){
+      if (window.paypal) return;
+      await new Promise((resolve, reject)=>{
+        const s = document.createElement("script");
+        s.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(CONFIG.PAYPAL_CLIENT_ID)}&currency=USD`;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
 
-      const prices = tvodPrices(t);
-      if (!prices.enabled) return;
-
-      await loadPayPalSDK();
-
-      const modal = document.createElement("div");
-      modal.className = "fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4";
-      modal.innerHTML = `
-        <div class="w-full max-w-md rounded-2xl bg-watchBlack border border-white/10 p-4 space-y-3">
-          <div class="text-xl font-bold">Rent / Buy</div>
-          <div class="text-white/70 text-sm">${esc(t.title || "Untitled")}</div>
-
-          <div class="grid grid-cols-2 gap-2 text-sm">
-            <div class="p-3 rounded-xl bg-white/5 border border-white/10">
-              <div class="font-semibold">Rent</div>
-              <div class="text-white/70">$${prices.rentPrice.toFixed(2)} • ${prices.rentHours}h access</div>
-              <div id="paypalRentBtn" class="mt-2"></div>
-            </div>
-
-            <div class="p-3 rounded-xl bg-white/5 border border-white/10">
-              <div class="font-semibold">Buy</div>
-              <div class="text-white/70">$${prices.buyPrice.toFixed(2)} • Unlimited</div>
-              <div id="paypalBuyBtn" class="mt-2"></div>
-            </div>
-          </div>
-
-          <button id="closeTVOD" class="w-full px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20">Cancel</button>
+    // ---------- Rendering ----------
+    function renderLoading(){
+      const app = $app(); if (!app) return;
+      app.innerHTML = `
+        <div class="min-h-screen flex items-center justify-center bg-watchBlack">
+          <div class="text-white/70 text-sm">Loading WatchVIM…</div>
         </div>
       `;
-      document.body.appendChild(modal);
-
-      modal.querySelector("#closeTVOD").onclick = () => modal.remove();
-      modal.addEventListener("click",(e)=>{ if(e.target===modal) modal.remove(); });
-
-      // Render PayPal buttons
-      window.paypal.Buttons({
-        style: { layout:"vertical", label:"rent", shape:"rect" },
-        createOrder: (data, actions) => actions.order.create({
-          purchase_units: [{
-            description: `WatchVIM Rent — ${t.title || t.id}`,
-            amount: { currency_code: CONFIG.PAYPAL_CURRENCY || "USD", value: prices.rentPrice.toFixed(2) }
-          }]
-        }),
-        onApprove: async (data, actions) => {
-          const details = await actions.order.capture();
-          const expiresAt = new Date(Date.now() + prices.rentHours*3600*1000).toISOString();
-
-          const { error } = await supabase.from("user_subscriptions").insert({
-            user_id: state.user.id,
-            title_id: t.id,
-            status: "rent",
-            provider: "paypal",
-            order_id: details?.id || data.orderID,
-            currency: CONFIG.PAYPAL_CURRENCY || "USD",
-            amount: prices.rentPrice,
-            expires_at: expiresAt
-          });
-
-          if (error) return alert(error.message);
-          modal.remove();
-          navTo(`#/watch/${t.id}?kind=content`);
-        },
-        onError: (err) => {
-          console.warn(err);
-          alert("PayPal Rent error.");
-        }
-      }).render("#paypalRentBtn");
-
-      window.paypal.Buttons({
-        style: { layout:"vertical", label:"buynow", shape:"rect" },
-        createOrder: (data, actions) => actions.order.create({
-          purchase_units: [{
-            description: `WatchVIM Buy — ${t.title || t.id}`,
-            amount: { currency_code: CONFIG.PAYPAL_CURRENCY || "USD", value: prices.buyPrice.toFixed(2) }
-          }]
-        }),
-        onApprove: async (data, actions) => {
-          const details = await actions.order.capture();
-
-          const { error } = await supabase.from("user_subscriptions").insert({
-            user_id: state.user.id,
-            title_id: t.id,
-            status: "buy",
-            provider: "paypal",
-            order_id: details?.id || data.orderID,
-            currency: CONFIG.PAYPAL_CURRENCY || "USD",
-            amount: prices.buyPrice,
-            expires_at: null
-          });
-
-          if (error) return alert(error.message);
-          modal.remove();
-          navTo(`#/watch/${t.id}?kind=content`);
-        },
-        onError: (err) => {
-          console.warn(err);
-          alert("PayPal Buy error.");
-        }
-      }).render("#paypalBuyBtn");
     }
 
-    // =========================================================
-    // LAYOUT SHELL
-    // =========================================================
-    const app = document.getElementById("app");
+    function renderError(err){
+      const app = $app(); if (!app) return;
+      app.innerHTML = `
+        <div class="min-h-screen flex flex-col items-center justify-center gap-4 p-6 text-center bg-watchBlack">
+          <div class="text-2xl font-bold text-watchRed">Couldn’t load WatchVIM</div>
+          <div class="text-white/70 max-w-xl">${esc(err?.message || err)}</div>
+          <button class="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20" onclick="location.reload()">Retry</button>
+        </div>
+      `;
+    }
 
-    function Header() {
+    function Header(){
       const loggedIn = !!state.user;
       const tabs = ["Movies","Series","Shorts","Foreign","LIVE"];
 
       return `
-        <header class="flex items-center gap-3 px-4 py-3 sticky top-0 z-20 bg-black/90 backdrop-blur safe-bottom border-b border-white/10">
-          <img src="${CONFIG.LOGO_URL}" alt="logo" class="h-8 w-auto object-contain cursor-pointer" onclick="navTo('#/home')" />
-          <nav class="ml-auto flex gap-2 text-sm">
-            ${tabs.map(tab => `
-              <button class="tv-focus px-3 py-1.5 rounded-full ${
-                state.activeTab===tab ? "bg-white text-black" : "bg-white/10 hover:bg-white/20"
-              }" onclick="setTab('${tab}')">${tab}</button>
-            `).join("")}
-            <button class="tv-focus px-3 py-1.5 rounded-full ${
-              state.route.name==="search" ? "bg-white text-black" : "bg-white/10 hover:bg-white/20"
-            }" onclick="navTo('#/search')">Search</button>
-          </nav>
+        <header class="sticky top-0 z-50 bg-watchBlack/95 backdrop-blur border-b border-white/10">
+          <div class="px-4 py-3 flex items-center justify-between gap-3">
+            <div class="flex items-center gap-3 cursor-pointer tv-focus" data-nav="#/home">
+              <img src="${CONFIG.LOGO_URL}" alt="WatchVIM" class="h-8 w-auto object-contain"/>
+            </div>
 
-          <div class="ml-2 flex gap-2 text-sm">
-            ${
-              loggedIn
-                ? `
-                  <button class="tv-focus px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20" onclick="navTo('#/profile')">Profile</button>
-                  <button class="tv-focus px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20" onclick="signOut()">Log out</button>
+            <nav class="flex items-center gap-2 text-sm">
+              ${tabs.map(tab => `
+                <button
+                  class="tv-focus px-3 py-1.5 rounded-full ${
+                    state.activeTab===tab ? "bg-white/15 text-white" : "text-white/70 hover:bg-white/10"
+                  }"
+                  data-tab="${tab}"
+                >${tab}</button>
+              `).join("")}
+            </nav>
+
+            <div class="flex items-center gap-2 text-sm">
+              ${
+                loggedIn ? `
+                  <button class="tv-focus px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20" data-nav="#/profile">Profile</button>
+                  <button class="tv-focus px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20" id="logoutBtn">Log out</button>
+                ` : `
+                  <button class="tv-focus px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20" data-nav="#/login?mode=login">Log in</button>
                 `
-                : `
-                  <button class="tv-focus px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20" onclick="navTo('#/login?mode=login')">Log in</button>
-                `
-            }
+              }
+            </div>
           </div>
         </header>
       `;
     }
 
-    function mobileTabBar(){
-      if (isTV()) return "";
-      const items = [
-        ["Movies","Movies"],["Series","Series"],["Shorts","Shorts"],["Foreign","Foreign"],["LIVE","LIVE"]
-      ];
-      return `
-        <footer class="fixed bottom-0 left-0 right-0 bg-black/95 border-t border-white/10 safe-bottom">
-          <div class="flex justify-around px-2 py-2">
-            ${items.map(([r,l])=>{
-              const on = state.activeTab.toLowerCase()===r.toLowerCase();
-              return `<button class="tv-focus flex-1 mx-1 py-2 rounded-lg text-xs ${on?"bg-white text-black":"bg-white/10"}"
-                onclick="setTab('${r}')">${l}</button>`;
-            }).join("")}
-          </div>
-        </footer>
-      `;
-    }
-
-    function shell(contentHTML="") {
-      app.innerHTML = `
-        ${Header()}
-        <main class="flex-1 px-3 md:px-6 pb-24 md:pb-8">
-          ${contentHTML}
-        </main>
-        ${mobileTabBar()}
-      `;
-      if (isTV()) tvFocusReset();
-      window.scrollTo(0,0);
-    }
-
-    // =========================================================
-    // HERO + ROWS
-    // =========================================================
     function HeroRow(items){
       if (!items.length) return "";
       const t = items[0];
@@ -560,8 +491,8 @@
       const hasTrailer = !!t.trailerPlaybackId;
 
       return `
-        <section class="relative w-full overflow-hidden mt-3 rounded-2xl">
-          <div class="aspect-video md:aspect-[21/9] bg-black relative rounded-2xl overflow-hidden">
+        <section class="relative w-full overflow-hidden">
+          <div class="aspect-video md:aspect-[21/9] bg-black relative">
             ${
               hasTrailer
                 ? `
@@ -574,8 +505,8 @@
                   ></mux-player>
                 `
                 : img
-                ? `<img src="${img}" class="w-full h-full object-cover opacity-90"/>`
-                : ""
+                  ? `<img src="${img}" class="w-full h-full object-cover opacity-90"/>`
+                  : ""
             }
             <div class="absolute inset-0 bg-gradient-to-t from-watchBlack via-watchBlack/40 to-transparent"></div>
           </div>
@@ -589,16 +520,16 @@
               <div class="flex flex-wrap gap-2 text-xs text-white/70">
                 ${t.releaseYear ? `<span class="px-2 py-1 rounded bg-white/10">${esc(t.releaseYear)}</span>` : ""}
                 ${toMins(t.runtimeMins) ? `<span class="px-2 py-1 rounded bg-white/10">${toMins(t.runtimeMins)} mins</span>` : ""}
-                ${(t.genre || []).slice(0, 4).map(g => `<span class="px-2 py-1 rounded bg-white/10">${esc(g)}</span>`).join("")}
+                ${(t.genre || []).slice(0,4).map(g=>`<span class="px-2 py-1 rounded bg-white/10">${esc(g)}</span>`).join("")}
               </div>
 
               <div class="pt-2 flex gap-2">
                 <button class="tv-focus px-4 py-2 rounded-lg bg-watchRed font-bold hover:opacity-90"
-                  onclick="navTo('#/${t.type === "series" ? "series" : "title"}/${t.id}')">View</button>
+                        data-nav="#/${t.type==="series"?"series":"title"}/${t.id}">View</button>
                 ${
                   t.trailerPlaybackId
                     ? `<button class="tv-focus px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20"
-                        onclick="navTo('#/watch/${t.id}?kind=trailer')">Play Trailer</button>`
+                               data-nav="#/watch/${t.id}?kind=trailer">Play Trailer</button>`
                     : ""
                 }
               </div>
@@ -611,12 +542,9 @@
     function Row(title, items){
       if (!items.length) return "";
       return `
-        <section class="mt-6 space-y-2">
-          <div class="flex items-center justify-between">
-            <h2 class="text-lg font-bold">${esc(title)}</h2>
-            <button class="tv-focus text-xs text-white/60 hover:text-white" onclick="navTo('#/tab/${esc(title)}')">See all</button>
-          </div>
-          <div class="row-scroll no-scrollbar flex gap-3 overflow-x-auto pb-2">
+        <section class="px-4 md:px-8 space-y-2">
+          <h2 class="text-lg font-bold">${esc(title)}</h2>
+          <div class="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
             ${items.map(Card).join("")}
           </div>
         </section>
@@ -625,34 +553,26 @@
 
     function Card(t){
       const img = poster(t);
-      const href = t.type === "series" ? `#/series/${t.id}` : `#/title/${t.id}`;
+      const href = t.type==="series" ? `#/series/${t.id}` : `#/title/${t.id}`;
       return `
-        <button class="tile tv-focus shrink-0 w-[38vw] md:w-[16vw] text-left group" onclick="navTo('${href}')">
-          <div class="rounded-xl overflow-hidden bg-white/5 border border-white/10">
-            ${img ? `<img src="${img}" class="w-full aspect-[2/3] object-cover group-hover:opacity-90" />` : ""}
+        <button class="tv-focus min-w-[140px] md:min-w-[170px] text-left" data-nav="${href}">
+          <div class="aspect-[2/3] rounded-xl overflow-hidden bg-white/5 border border-white/10">
+            ${img ? `<img src="${img}" class="w-full h-full object-cover"/>` : ""}
           </div>
-          <div class="mt-2">
-            <div class="text-xs text-white/60">${typeLabel(t.type)}</div>
-            <div class="text-sm font-medium line-clamp-1">${esc(t.title || "Untitled")}</div>
-          </div>
+          <div class="mt-2 text-sm font-semibold line-clamp-2">${esc(t.title || "Untitled")}</div>
+          <div class="text-xs text-white/60">${typeLabel(t.type)}</div>
         </button>
       `;
     }
 
-    // =========================================================
-    // PAGES
-    // =========================================================
     function HomePage(){
-      const filtered = state.titles.filter(TAB_FILTERS[state.activeTab] || (()=>true));
+      const filtered = state.titles.filter(TAB_FILTERS[state.activeTab] || (()=>true)) || [];
       const heroItems = filtered.slice(0,1);
-
-      const lastWatched = readLastWatched()
-        .map((x)=>state.byId.get(x.titleId))
-        .filter(Boolean);
+      const lastWatched = readLastWatched().map(x=>state.byId.get(x.titleId)).filter(Boolean);
 
       const byGenreBuckets = {};
-      filtered.forEach((t)=>{
-        (t.genre || ["Featured"]).forEach((g)=>{
+      filtered.forEach(t=>{
+        (t.genre || ["Featured"]).forEach(g=>{
           const key = g || "Featured";
           byGenreBuckets[key] = byGenreBuckets[key] || [];
           byGenreBuckets[key].push(t);
@@ -661,7 +581,7 @@
 
       const genreRows = Object.entries(byGenreBuckets)
         .slice(0,8)
-        .map(([g,items])=>Row(g, items.slice(0,20)))
+        .map(([g, items]) => Row(g, items.slice(0,20)))
         .join("");
 
       return `
@@ -674,23 +594,6 @@
       `;
     }
 
-    function TabPage(tab){
-      const items = state.titles.filter(TAB_FILTERS[tab] || (()=>true));
-      return `
-        <h2 class="text-2xl font-semibold mt-4">${esc(tab)}</h2>
-        <div class="grid grid-cols-2 md:grid-cols-6 gap-3 mt-4">
-          ${items.map((t)=>`
-            <button class="tv-focus text-left group" onclick="navTo('#/${t.type==="series"?"series":"title"}/${t.id}')">
-              <div class="rounded-xl overflow-hidden bg-white/5 border border-white/10">
-                <img src="${poster(t)}" class="w-full aspect-[2/3] object-cover" />
-              </div>
-              <div class="mt-2 text-sm line-clamp-1">${esc(t.title||"Untitled")}</div>
-            </button>
-          `).join("")}
-        </div>
-      `;
-    }
-
     function CreditsBlock(t){
       const actors = (t.actors || t.cast || []).join?.(", ") || t.actors || t.cast || "";
       const director = (t.director || t.directors || "").toString();
@@ -698,6 +601,7 @@
 
       const imdb = t.imdbRating || t.ratings?.imdb || "";
       const rt = t.rottenTomatoesRating || t.ratings?.rottenTomatoes || "";
+
       if (!actors && !director && !writers && !imdb && !rt) return "";
 
       return `
@@ -705,31 +609,14 @@
           ${actors ? `<div><div class="text-xs text-white/60">Actors</div><div>${esc(actors)}</div></div>` : ""}
           ${director ? `<div><div class="text-xs text-white/60">Director</div><div>${esc(director)}</div></div>` : ""}
           ${writers ? `<div><div class="text-xs text-white/60">Writers</div><div>${esc(writers)}</div></div>` : ""}
-          ${(imdb||rt)?`
+          ${(imdb || rt) ? `
             <div class="flex gap-2 items-end">
-              ${imdb?`<span class="px-2 py-1 rounded bg-white/10 text-xs">IMDb: <b>${esc(imdb)}</b></span>`:""}
-              ${rt?`<span class="px-2 py-1 rounded bg-white/10 text-xs">Rotten Tomatoes: <b>${esc(rt)}</b></span>`:""}
+              ${imdb ? `<span class="px-2 py-1 rounded bg-white/10 text-xs">IMDb: <b>${esc(imdb)}</b></span>` : ""}
+              ${rt ? `<span class="px-2 py-1 rounded bg-white/10 text-xs">Rotten Tomatoes: <b>${esc(rt)}</b></span>` : ""}
             </div>
-          `:""}
+          ` : ""}
         </div>
       `;
-    }
-
-    function renderWatchCTA(t){
-      const monet = t.monetization || {};
-      const tvod = monet.tvod || {};
-      const canWatch = monet.svod || monet.avod || !tvod.enabled;
-
-      if (tvod.enabled && !state.user){
-        return `<button class="tv-focus px-4 py-2 rounded-lg bg-watchRed font-bold" onclick="navTo('#/login?mode=login')">Log in to Rent/Buy</button>`;
-      }
-      if (tvod.enabled && state.user){
-        return `<button class="tv-focus px-4 py-2 rounded-lg bg-watchRed font-bold hover:opacity-90" onclick="openTVODModal(state.byId.get('${t.id}'))">Rent / Buy</button>`;
-      }
-      if (canWatch){
-        return `<button class="tv-focus px-4 py-2 rounded-lg bg-watchRed font-bold hover:opacity-90" onclick="navTo('#/watch/${t.id}?kind=content')">Watch Now</button>`;
-      }
-      return "";
     }
 
     function TitlePage(id){
@@ -745,34 +632,39 @@
         tvod.enabled ? "TVOD" : null
       ].filter(Boolean).join(" • ");
 
+      // if tvod enabled, check entitlement async (re-render when done)
+      if (tvod.enabled && state.user && !state.entitlements.has(t.id)) {
+        fetchEntitlement(t.id).then(()=> render());
+      }
+
       return `
         <section class="relative">
-          <div class="aspect-video bg-black rounded-2xl overflow-hidden">
-            ${img?`<img src="${img}" class="w-full h-full object-cover opacity-90"/>`:""}
+          <div class="aspect-video bg-black">
+            ${img ? `<img src="${img}" class="w-full h-full object-cover opacity-90"/>` : ""}
             <div class="absolute inset-0 bg-gradient-to-t from-watchBlack via-watchBlack/40 to-transparent"></div>
           </div>
 
-          <div class="p-4 md:p-8 -mt-10 md:-mt-20 relative z-10">
+          <div class="p-4 md:p-8 -mt-12 md:-mt-20 relative z-10">
             <div class="max-w-4xl space-y-3">
-              <button class="tv-focus text-xs text-white/70 hover:text-white" onclick="history.back()">← Back</button>
+              <button class="tv-focus text-xs text-white/70 hover:text-white" id="backBtn">← Back</button>
 
               <div class="flex flex-wrap gap-2 text-xs text-white/70">
                 <span class="px-2 py-1 rounded bg-white/10">${typeLabel(t.type)}</span>
-                ${t.releaseYear?`<span class="px-2 py-1 rounded bg-white/10">${esc(t.releaseYear)}</span>`:""}
-                ${toMins(t.runtimeMins)?`<span class="px-2 py-1 rounded bg-white/10">${toMins(t.runtimeMins)} mins</span>`:""}
-                ${accessBadge?`<span class="px-2 py-1 rounded bg-watchGold/20 text-watchGold">${accessBadge}</span>`:""}
+                ${t.releaseYear ? `<span class="px-2 py-1 rounded bg-white/10">${esc(t.releaseYear)}</span>` : ""}
+                ${toMins(t.runtimeMins) ? `<span class="px-2 py-1 rounded bg-white/10">${toMins(t.runtimeMins)} mins</span>` : ""}
+                ${accessBadge ? `<span class="px-2 py-1 rounded bg-watchGold/20 text-watchGold">${accessBadge}</span>` : ""}
               </div>
 
-              <h1 class="text-2xl md:text-4xl font-black">${esc(t.title||"Untitled")}</h1>
-              <p class="text-white/80">${esc(t.synopsis||"")}</p>
+              <h1 class="text-2xl md:text-4xl font-black">${esc(t.title || "Untitled")}</h1>
+              <p class="text-white/80">${esc(t.synopsis || "")}</p>
 
               ${CreditsBlock(t)}
 
               <div class="flex flex-wrap gap-2 pt-2">
-                ${t.trailerPlaybackId?`
+                ${t.trailerPlaybackId ? `
                   <button class="tv-focus px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20"
-                    onclick="navTo('#/watch/${t.id}?kind=trailer')">Play Trailer</button>
-                `:""}
+                          data-nav="#/watch/${t.id}?kind=trailer">Play Trailer</button>
+                ` : ""}
                 ${renderWatchCTA(t)}
               </div>
             </div>
@@ -781,37 +673,75 @@
       `;
     }
 
+    function renderWatchCTA(t){
+      const monet = t.monetization || {};
+      const tvod = monet.tvod || {};
+      const entitled = isEntitled(t.id);
+
+      const canWatch = entitled || monet.svod || monet.avod || !tvod.enabled;
+
+      if (tvod.enabled && !state.user) {
+        return `<button class="tv-focus px-4 py-2 rounded-lg bg-watchRed font-bold"
+                        data-nav="#/login?mode=login">Log in to Rent/Buy</button>`;
+      }
+
+      if (tvod.enabled && state.user && !entitled) {
+        const rentPrice = tvod.rentPrice ? `$${tvod.rentPrice}` : "Rent";
+        const buyPrice  = tvod.buyPrice  ? `$${tvod.buyPrice}`  : "Buy";
+        return `
+          <button class="tv-focus px-4 py-2 rounded-lg bg-watchRed font-bold hover:opacity-90"
+                  data-tvod="${t.id}">
+            Rent / Buy (${rentPrice} • ${buyPrice})
+          </button>
+        `;
+      }
+
+      if (canWatch) {
+        return `
+          <button class="tv-focus px-4 py-2 rounded-lg bg-watchRed font-bold hover:opacity-90"
+                  data-nav="#/watch/${t.id}?kind=content">
+            Watch Now
+          </button>
+        `;
+      }
+
+      return "";
+    }
+
     function SeriesPage(id){
       const s = state.byId.get(id);
-      if (!s || s.type !== "series") return NotFound("Series not found");
+      if (!s || s.type!=="series") return NotFound("Series not found");
 
       const img = hero(s);
+
       return `
         <section class="relative">
-          <div class="aspect-video bg-black rounded-2xl overflow-hidden">
-            ${img?`<img src="${img}" class="w-full h-full object-cover opacity-90"/>`:""}
+          <div class="aspect-video bg-black">
+            ${img ? `<img src="${img}" class="w-full h-full object-cover opacity-90"/>` : ""}
             <div class="absolute inset-0 bg-gradient-to-t from-watchBlack via-watchBlack/40 to-transparent"></div>
           </div>
 
-          <div class="p-4 md:p-8 -mt-10 md:-mt-20 relative z-10">
+          <div class="p-4 md:p-8 -mt-12 md:-mt-20 relative z-10">
             <div class="max-w-5xl space-y-3">
-              <button class="tv-focus text-xs text-white/70 hover:text-white" onclick="history.back()">← Back</button>
+              <button class="tv-focus text-xs text-white/70 hover:text-white" id="backBtn">← Back</button>
               <div class="text-xs uppercase tracking-widest text-watchGold/90">Series</div>
-              <h1 class="text-2xl md:text-4xl font-black">${esc(s.title||"Untitled")}</h1>
-              <p class="text-white/80">${esc(s.synopsis||"")}</p>
+              <h1 class="text-2xl md:text-4xl font-black">${esc(s.title || "Untitled")}</h1>
+              <p class="text-white/80">${esc(s.synopsis || "")}</p>
 
               ${CreditsBlock(s)}
 
               <div class="flex flex-wrap gap-2 pt-2">
-                ${s.trailerPlaybackId?`
+                ${s.trailerPlaybackId ? `
                   <button class="tv-focus px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20"
-                    onclick="navTo('#/watch/${s.id}?kind=trailer')">Play Trailer</button>
-                `:""}
+                    data-nav="#/watch/${s.id}?kind=trailer">Play Trailer</button>
+                ` : ""}
               </div>
 
               <div class="pt-6 space-y-5">
-                ${(s.seasons||[]).map((season, si)=>SeasonBlock(s,season,si)).join("") ||
-                  `<div class="text-white/60 text-sm">No seasons published yet.</div>`}
+                ${
+                  (s.seasons || []).map((season, si)=>SeasonBlock(s, season, si)).join("") ||
+                  `<div class="text-white/60 text-sm">No seasons published yet.</div>`
+                }
               </div>
             </div>
           </div>
@@ -828,31 +758,31 @@
             <div class="text-xs text-white/60">${episodes.length} episodes</div>
           </div>
           <div class="space-y-2">
-            ${episodes.map((ep, ei)=>EpisodeRow(series, season, ep, seasonIndex, ei)).join("")}
+            ${episodes.map((ep, ei)=>EpisodeRow(series, ep, seasonIndex, ei)).join("")}
           </div>
         </div>
       `;
     }
 
-    function EpisodeRow(series, _season, ep, seasonIndex, epIndex){
-      const img = ep.thumbnailUrl || series.posterUrl || poster(series) || "";
+    function EpisodeRow(series, ep, seasonIndex, epIndex){
+      const img = ep.thumbnailUrl || series.posterUrl || "";
       return `
         <div class="flex gap-3 p-2 rounded-lg bg-white/5 border border-white/10">
           <img src="${img}" class="w-20 h-28 object-cover rounded-md bg-black/40"/>
           <div class="flex-1 space-y-1">
             <div class="text-sm font-semibold">
-              E${ep.episodeNumber || epIndex+1} — ${esc(ep.title||"Untitled")}
+              E${ep.episodeNumber || epIndex+1} — ${esc(ep.title || "Untitled")}
             </div>
-            <div class="text-xs text-white/60 line-clamp-2">${esc(ep.synopsis||"")}</div>
-            <div class="text-xs text-white/60">${toMins(ep.runtimeMins)?`${toMins(ep.runtimeMins)} mins`:""}</div>
+            <div class="text-xs text-white/60 line-clamp-2">${esc(ep.synopsis || "")}</div>
+            <div class="text-xs text-white/60">${toMins(ep.runtimeMins) ? `${toMins(ep.runtimeMins)} mins` : ""}</div>
 
             <div class="flex gap-2 pt-1">
-              ${ep.trailerPlaybackId?`
+              ${ep.trailerPlaybackId ? `
                 <button class="tv-focus px-3 py-1.5 text-xs rounded bg-white/10 hover:bg-white/20"
-                  onclick="navTo('#/episode/${series.id}/${seasonIndex}/${epIndex}?kind=trailer')">Trailer</button>
-              `:""}
+                        data-nav="#/episode/${series.id}/${seasonIndex}/${epIndex}?kind=trailer">Trailer</button>
+              ` : ""}
               <button class="tv-focus px-3 py-1.5 text-xs rounded bg-watchRed font-bold"
-                onclick="navTo('#/episode/${series.id}/${seasonIndex}/${epIndex}?kind=content')">Watch</button>
+                      data-nav="#/episode/${series.id}/${seasonIndex}/${epIndex}?kind=content">Watch</button>
             </div>
           </div>
         </div>
@@ -868,134 +798,175 @@
       const playbackId = kind==="trailer" ? ep.trailerPlaybackId : ep.contentPlaybackId;
       if (!playbackId){
         return `<div class="p-6 space-y-3">
-          <button class="tv-focus text-xs text-white/70 hover:text-white" onclick="history.back()">← Back</button>
+          <button class="tv-focus text-xs text-white/70 hover:text-white" id="backBtn">← Back</button>
           <div class="text-white/70">No ${kind} playback ID set for this episode.</div>
         </div>`;
       }
 
-      setTimeout(()=>markWatched(seriesId,0),0);
+      setTimeout(()=>markWatched(seriesId, 0), 0);
 
       return `
         <div class="p-4 md:p-8 space-y-4">
-          <button class="tv-focus text-xs text-white/70 hover:text-white" onclick="history.back()">← Back</button>
+          <button class="tv-focus text-xs text-white/70 hover:text-white" id="backBtn">← Back</button>
           <div class="text-xl font-bold">
             ${esc(s.title)} — S${season.seasonNumber || Number(seasonIndex)+1}E${ep.episodeNumber || Number(epIndex)+1}
           </div>
 
           ${CreditsBlock(ep)}
 
-          <div class="aspect-video bg-black rounded-xl overflow-hidden border border-white/10">
-            <mux-player stream-type="on-demand" playback-id="${esc(playbackId)}"
-              class="w-full h-full" controls autoplay></mux-player>
-          </div>
+          <div id="playerWrap" class="aspect-video bg-black rounded-xl overflow-hidden border border-white/10"></div>
         </div>
       `;
     }
 
-    async function WatchPage(id, kind="content"){
+    function WatchPage(id, kind="content"){
       const t = state.byId.get(id);
       if (!t) return NotFound("Title not found");
 
       const pb = kind==="trailer" ? t.trailerPlaybackId : t.contentPlaybackId;
       if (!pb){
         return `<div class="p-6 space-y-3">
-          <button class="tv-focus text-xs text-white/70 hover:text-white" onclick="history.back()">← Back</button>
+          <button class="tv-focus text-xs text-white/70 hover:text-white" id="backBtn">← Back</button>
           <div class="text-white/70">No ${kind} playback ID set for this title.</div>
         </div>`;
       }
 
-      // TVOD gate for content (trailers always free)
-      if (kind === "content" && t.monetization?.tvod?.enabled) {
-        const { hasAccess } = await ensureTVODStatus(t.id);
-        if (!hasAccess) {
-          return `
-            <div class="p-6 md:p-8 space-y-3">
-              <button class="tv-focus text-xs text-white/70 hover:text-white" onclick="history.back()">← Back</button>
-              <div class="text-xl font-bold">${esc(t.title||"Untitled")}</div>
-              <div class="text-white/70">This title is TVOD. Rent or Buy to watch.</div>
-              <button class="tv-focus px-4 py-2 rounded-lg bg-watchRed font-bold w-fit"
-                onclick="openTVODModal(state.byId.get('${t.id}'))">Rent / Buy</button>
-            </div>
-          `;
-        }
-      }
-
-      setTimeout(()=>markWatched(id,0),0);
+      setTimeout(()=>markWatched(id, 0), 0);
 
       return `
         <div class="p-4 md:p-8 space-y-4">
-          <button class="tv-focus text-xs text-white/70 hover:text-white" onclick="history.back()">← Back</button>
+          <button class="tv-focus text-xs text-white/70 hover:text-white" id="backBtn">← Back</button>
           <div class="text-xl font-bold">${esc(t.title)}</div>
 
           ${CreditsBlock(t)}
 
-          <div class="aspect-video bg-black rounded-xl overflow-hidden border border-white/10">
-            <mux-player stream-type="on-demand" playback-id="${esc(pb)}"
-              class="w-full h-full" controls autoplay></mux-player>
-          </div>
+          <div id="playerWrap" class="aspect-video bg-black rounded-xl overflow-hidden border border-white/10"></div>
         </div>
       `;
     }
 
-    // =========================================================
-    // LOGIN / PROFILE
-    // =========================================================
-    let loginView = "login";
-    function setLoginView(v){
-      loginView = v==="signup"?"signup":"login";
-      navTo(`#/login?mode=${loginView}`);
+    function mountPlayer(playbackId, vastTag){
+      const wrap = document.getElementById("playerWrap");
+      if (!wrap) return;
+      wrap.innerHTML = `
+        <mux-player
+          id="muxPlayer"
+          stream-type="on-demand"
+          playback-id="${esc(playbackId)}"
+          class="w-full h-full"
+          controls autoplay
+        ></mux-player>
+      `;
+
+      if (vastTag) runVastPreroll(vastTag);
     }
+
+    function runVastPreroll(vastTag){
+      const wrap = document.getElementById("playerWrap");
+      const adDiv = document.createElement("div");
+      adDiv.id = "adContainer";
+      adDiv.className = "absolute inset-0 z-10";
+      wrap.style.position = "relative";
+      wrap.appendChild(adDiv);
+
+      try {
+        const videoEl =
+          document.querySelector("#muxPlayer")?.shadowRoot?.querySelector("video");
+        if (!videoEl) return;
+
+        const adDisplayContainer = new google.ima.AdDisplayContainer(adDiv, videoEl);
+        const adsLoader = new google.ima.AdsLoader(adDisplayContainer);
+
+        adsLoader.addEventListener(
+          google.ima.AdsManagerLoadedEvent.Type.ADS_MANAGER_LOADED,
+          (e)=>{
+            const adsManager = e.getAdsManager(videoEl);
+            adsManager.init(videoEl.clientWidth, videoEl.clientHeight, google.ima.ViewMode.NORMAL);
+            adsManager.start();
+          },
+          false
+        );
+
+        const adsRequest = new google.ima.AdsRequest();
+        adsRequest.adTagUrl = vastTag;
+        adsRequest.linearAdSlotWidth = videoEl.clientWidth;
+        adsRequest.linearAdSlotHeight = videoEl.clientHeight;
+
+        adDisplayContainer.initialize();
+        adsLoader.requestAds(adsRequest);
+      } catch (err){
+        console.warn("VAST preroll failed.", err);
+      }
+    }
+
+    // ---------- LOGIN / PROFILE ----------
+    let loginView = "login";
 
     function LoginPage(){
       if (!supabase){
         return `
           <div class="p-6 max-w-md mx-auto space-y-3">
             <div class="text-2xl font-bold">Login</div>
-            <div class="text-white/70 text-sm">Supabase isn’t configured yet.</div>
+            <div class="text-white/70 text-sm">
+              Supabase isn’t configured yet. Add SUPABASE_URL and SUPABASE_ANON_KEY to /config.json.
+            </div>
           </div>
         `;
       }
 
-      const isLogin = loginView === "login";
+      const isLogin = loginView==="login";
+
       return `
         <div class="p-6 max-w-md mx-auto space-y-5">
           <div class="text-2xl font-black">Welcome to WatchVIM</div>
 
           <div class="flex rounded-xl bg-white/5 border border-white/10 p-1 text-sm">
             <button class="tv-focus flex-1 py-2 rounded-lg ${isLogin?"bg-white/15":"hover:bg-white/10 text-white/70"}"
-              onclick="setLoginView('login')">Log In</button>
+              data-loginview="login">Log In</button>
             <button class="tv-focus flex-1 py-2 rounded-lg ${!isLogin?"bg-white/15":"hover:bg-white/10 text-white/70"}"
-              onclick="setLoginView('signup')">Become a Member</button>
+              data-loginview="signup">Become a Member</button>
           </div>
 
-          ${!isLogin?`
+          ${!isLogin ? `
             <div class="space-y-2">
               <div class="text-xs text-white/60">Full Name</div>
-              <input id="signupName" class="w-full px-3 py-2 rounded bg-white/5 border border-white/10" placeholder="Your name"/>
+              <input id="signupName" class="w-full px-3 py-2 rounded bg-white/5 border border-white/10"
+                     placeholder="Your name" />
             </div>
           `:""}
 
           <div class="space-y-2">
             <div class="text-xs text-white/60">Email</div>
-            <input id="loginEmail" class="w-full px-3 py-2 rounded bg-white/5 border border-white/10" placeholder="you@email.com"/>
+            <input id="loginEmail" class="w-full px-3 py-2 rounded bg-white/5 border border-white/10"
+                   placeholder="you@email.com" />
           </div>
 
           <div class="space-y-2">
             <div class="text-xs text-white/60">Password</div>
-            <input id="loginPass" type="password" class="w-full px-3 py-2 rounded bg-white/5 border border-white/10" placeholder="••••••••"/>
+            <input id="loginPass" type="password"
+                   class="w-full px-3 py-2 rounded bg-white/5 border border-white/10"
+                   placeholder="••••••••" />
           </div>
 
-          ${!isLogin?`
+          ${!isLogin ? `
             <div class="space-y-2">
               <div class="text-xs text-white/60">Confirm Password</div>
-              <input id="signupPass2" type="password" class="w-full px-3 py-2 rounded bg-white/5 border border-white/10" placeholder="••••••••"/>
+              <input id="signupPass2" type="password"
+                     class="w-full px-3 py-2 rounded bg-white/5 border border-white/10"
+                     placeholder="••••••••" />
             </div>
           `:""}
 
           <button class="tv-focus w-full px-4 py-2 rounded-lg bg-watchRed font-bold hover:opacity-90"
-            onclick="${isLogin?"handleSignIn()":"handleSignUp()"}">
+                  id="loginCtaBtn">
             ${isLogin?"Log In":"Create Account"}
           </button>
+
+          <div class="text-xs text-white/60">
+            ${isLogin
+              ? "New here? Click <b>Become a Member</b> above to sign up."
+              : "You may need to confirm your email before logging in."}
+          </div>
         </div>
       `;
     }
@@ -1007,26 +978,25 @@
           <div class="p-6 max-w-md mx-auto space-y-3">
             <div class="text-2xl font-bold">Profile</div>
             <div class="text-white/70">You’re not logged in.</div>
-            <button class="tv-focus px-4 py-2 rounded bg-watchRed font-bold" onclick="navTo('#/login?mode=login')">Log in</button>
+            <button class="tv-focus px-4 py-2 rounded bg-watchRed font-bold" data-nav="#/login?mode=login">Log in</button>
           </div>
         `;
       }
 
-      const lastWatched = readLastWatched().map((x)=>state.byId.get(x.titleId)).filter(Boolean);
+      const lastWatched = readLastWatched().map(x=>state.byId.get(x.titleId)).filter(Boolean);
 
       return `
         <div class="p-6 max-w-3xl mx-auto space-y-4">
           <div class="text-2xl font-bold">Your Profile</div>
-
           <div class="bg-white/5 border border-white/10 rounded-xl p-4">
             <div class="text-sm text-white/60">Email</div>
             <div class="font-semibold">${esc(state.user.email)}</div>
           </div>
 
-          ${lastWatched.length?`
+          ${lastWatched.length ? `
             <div class="space-y-2">
               <div class="text-lg font-bold">Continue Watching</div>
-              <div class="row-scroll no-scrollbar flex gap-3 overflow-x-auto pb-2">
+              <div class="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
                 ${lastWatched.slice(0,12).map(Card).join("")}
               </div>
             </div>
@@ -1039,62 +1009,26 @@
       return `
         <div class="p-6 text-center space-y-2">
           <div class="text-xl font-bold">${esc(msg)}</div>
-          <button class="tv-focus px-4 py-2 rounded bg-white/10 hover:bg-white/20" onclick="navTo('#/home')">Go Home</button>
+          <button class="tv-focus px-4 py-2 rounded bg-white/10 hover:bg-white/20" data-nav="#/home">Go Home</button>
         </div>
       `;
     }
 
-    // =========================================================
-    // SEARCH
-    // =========================================================
-    function SearchPage(){
-      return `
-        <section class="mt-4">
-          <input id="searchInput" class="w-full px-4 py-3 rounded-xl bg-white/10 outline-none"
-            placeholder="Search titles..." />
-          <div id="searchResults" class="grid grid-cols-2 md:grid-cols-6 gap-3 mt-4"></div>
-        </section>
-      `;
-    }
-
-    function wireSearch(){
-      const input = document.getElementById("searchInput");
-      const results = document.getElementById("searchResults");
-      if (!input || !results) return;
-
-      function show(q){
-        const all = state.titles || [];
-        const filtered = all.filter(t => (t.title||"").toLowerCase().includes(q.toLowerCase()));
-        results.innerHTML = filtered.map((t)=>`
-          <button class="tv-focus text-left group" onclick="navTo('#/${t.type==="series"?"series":"title"}/${t.id}')">
-            <div class="rounded-xl overflow-hidden bg-white/5 border border-white/10">
-              <img src="${poster(t)}" class="w-full aspect-[2/3] object-cover"/>
-            </div>
-            <div class="mt-2 text-sm line-clamp-1">${esc(t.title||"Untitled")}</div>
-          </button>
-        `).join("");
-        if (isTV()) tvFocusReset();
-      }
-
-      input.addEventListener("input",(e)=>show(e.target.value));
-      show("");
-    }
-
-    // =========================================================
-    // LIVE LOOP (same as frontend)
-    // =========================================================
+    // ---------- LIVE LOOP (same as website) ----------
     function initLoopQueue(){
       const loop = state.catalog?.loopChannel;
-      if (!loop || !(loop.rotationItems||[]).length){
+      if (!loop || !(loop.rotationItems || []).length){
         state.loop.queue = [];
         return;
       }
 
-      const items = (loop.rotationItems||[])
+      const items = (loop.rotationItems || [])
         .map(resolveLoopItem)
         .filter(Boolean);
 
-      state.loop.queue = loop.shuffle ? shuffleArray(items) : items;
+      const finalQueue = loop.shuffle ? shuffleArray(items) : items;
+
+      state.loop.queue = finalQueue;
       state.loop.index = 0;
       state.loop.lastAdAt = 0;
       state.loop.shuffle = !!loop.shuffle;
@@ -1105,7 +1039,7 @@
       if (!it) return null;
       const { refType, refId, label } = it;
 
-      if (refType==="title"){
+      if (refType === "title"){
         const t = state.byId.get(refId);
         if (!t) return null;
         return {
@@ -1117,15 +1051,16 @@
         };
       }
 
-      if (refType==="episode"){
+      if (refType === "episode"){
         const ep = state.byId.get(refId);
         if (!ep) return null;
         const series = state.byId.get(ep.__seriesId);
+
         return {
           kind:"content",
           refType, refId,
-          label: label || `${series?.title||"Series"} — S${Number(ep.__seasonIndex)+1}E${Number(ep.__epIndex)+1} • ${ep.title||"Untitled"}`,
-          poster: ep.thumbnailUrl || poster(series) || "",
+          label: label || `${series?.title || "Series"} — S${Number(ep.__seasonIndex)+1}E${Number(ep.__epIndex)+1} • ${ep.title || "Untitled"}`,
+          poster: ep.thumbnailUrl || series?.posterUrl || "",
           playbackId: ep.contentPlaybackId || ep.trailerPlaybackId || ""
         };
       }
@@ -1137,7 +1072,6 @@
       const loop = state.catalog?.loopChannel;
       const ads = loop?.sponsoredAds || [];
       if (!ads.length) return null;
-
       const ad = ads[Math.floor(Math.random()*ads.length)];
       if (!ad) return null;
 
@@ -1155,13 +1089,14 @@
       const loop = state.catalog?.loopChannel;
       const freqMins = Number(loop?.adFrequencyMins || 12);
       if (!freqMins) return false;
+
       const elapsedMs = Date.now() - (state.loop.lastAdAt || 0);
       return elapsedMs >= freqMins * 60 * 1000;
     }
 
     function nextLoopItem(){
       if (!state.loop.queue.length) return null;
-      state.loop.index = (state.loop.index + 1) % state.loop.queue.length;
+      state.loop.index = (state.loop.index+1) % state.loop.queue.length;
       if (state.loop.index===0 && state.loop.shuffle){
         state.loop.queue = shuffleArray(state.loop.queue);
       }
@@ -1175,6 +1110,7 @@
     function LoopPage(){
       const loop = state.catalog?.loopChannel;
       const queue = state.loop.queue;
+
       if (!loop || !queue.length){
         return `
           <div class="p-6 md:p-8 space-y-3">
@@ -1194,27 +1130,28 @@
             <div>
               <div class="text-2xl font-bold">LIVE</div>
               <div class="text-xs text-white/60">
-                ${loop.shuffle?"Shuffle On":"Shuffle Off"} • Ads every ${loop.adFrequencyMins||12} mins
+                ${loop.shuffle ? "Shuffle On" : "Shuffle Off"} • Ads every ${loop.adFrequencyMins || 12} mins
               </div>
             </div>
             <div class="flex gap-2">
-              <button class="tv-focus px-3 py-1.5 rounded bg-white/10 hover:bg-white/20 text-sm" onclick="toggleLoopShuffle()">
-                ${state.loop.shuffle?"Disable Shuffle":"Enable Shuffle"}
+              <button class="tv-focus px-3 py-1.5 rounded bg-white/10 hover:bg-white/20 text-sm" id="toggleShuffleBtn">
+                ${state.loop.shuffle ? "Disable Shuffle" : "Enable Shuffle"}
               </button>
-              <button class="tv-focus px-3 py-1.5 rounded bg-white/10 hover:bg-white/20 text-sm" onclick="skipLoop()">
+              <button class="tv-focus px-3 py-1.5 rounded bg-white/10 hover:bg-white/20 text-sm" id="skipLoopBtn">
                 Next →
               </button>
             </div>
           </div>
 
           <div class="space-y-2">
-            <div class="text-sm font-semibold">${esc(nowItem?.label||"")}</div>
+            <div class="text-sm font-semibold">${esc(nowItem?.label || "")}</div>
+
             ${
               playbackId ? `
                 <div class="aspect-video bg-black rounded-xl overflow-hidden border border-white/10">
                   <mux-player id="loopPlayer" stream-type="on-demand"
-                    playback-id="${esc(playbackId)}" class="w-full h-full"
-                    controls autoplay></mux-player>
+                    playback-id="${esc(playbackId)}"
+                    class="w-full h-full" controls autoplay></mux-player>
                 </div>
               ` : `
                 <div class="p-6 rounded-xl bg-white/5 border border-white/10 text-white/70">
@@ -1226,11 +1163,11 @@
 
           <div class="pt-2">
             <div class="text-xs text-white/60 mb-2">Up Next</div>
-            <div class="row-scroll no-scrollbar flex gap-3 overflow-x-auto pb-2">
+            <div class="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
               ${queue.slice(0,12).map((q,i)=>`
                 <div class="min-w-[150px]">
                   <div class="aspect-[2/3] rounded-lg overflow-hidden bg-white/5 border border-white/10">
-                    ${q.poster?`<img src="${q.poster}" class="w-full h-full object-cover"/>`:""}
+                    ${q.poster ? `<img src="${q.poster}" class="w-full h-full object-cover"/>` : ""}
                   </div>
                   <div class="mt-1 text-xs line-clamp-2 ${i===state.loop.index?"text-watchGold":"text-white/80"}">
                     ${esc(q.label)}
@@ -1252,6 +1189,7 @@
         setTimeout(()=>playNextLoop(), 500);
         return;
       }
+
       p.addEventListener("ended", ()=>playNextLoop());
       p.addEventListener("error", ()=>playNextLoop());
     }
@@ -1273,14 +1211,16 @@
     }
 
     function renderLoopAd(ad){
-      shell(`
-        <div class="p-4 md:p-8 space-y-3">
-          <div class="text-xs uppercase tracking-widest text-watchGold/90">Sponsored</div>
-          <div class="text-lg font-bold">${esc(ad.label||"Ad")}</div>
+      const app = $app(); if (!app) return;
+      app.innerHTML = `
+        ${Header()}
+        <div class="min-h-[calc(100vh-64px)] bg-watchBlack">
+          <div class="p-4 md:p-8 space-y-3">
+            <div class="text-xs uppercase tracking-widest text-watchGold/90">Sponsored</div>
+            <div class="text-lg font-bold">${esc(ad.label || "Ad")}</div>
 
-          <div class="aspect-video bg-black rounded-xl overflow-hidden border border-white/10">
-            ${
-              ad.playbackId ? `
+            <div class="aspect-video bg-black rounded-xl overflow-hidden border border-white/10">
+              ${ad.playbackId ? `
                 <mux-player id="loopAdPlayer" stream-type="on-demand"
                   playback-id="${esc(ad.playbackId)}" class="w-full h-full"
                   autoplay muted="false" controls></mux-player>
@@ -1288,87 +1228,203 @@
                 <video id="loopAdPlayer" class="w-full h-full" autoplay controls>
                   <source src="${esc(ad.mediaUrl)}" />
                 </video>
-              `
-            }
+              `}
+            </div>
+
+            ${ad.clickUrl ? `
+              <a class="text-sm text-watchGold underline" href="${esc(ad.clickUrl)}" target="_blank" rel="noreferrer">Learn more</a>
+            `:""}
+
+            <button class="tv-focus px-3 py-2 rounded bg-white/10 hover:bg-white/20 text-sm w-fit" id="skipAdBtn">
+              Skip Ad →
+            </button>
           </div>
-
-          ${ad.clickUrl?`
-            <a class="text-sm text-watchGold underline" href="${esc(ad.clickUrl)}" target="_blank" rel="noreferrer">Learn more</a>
-          `:""}
-
-          <button class="tv-focus px-3 py-2 rounded bg-white/10 hover:bg-white/20 text-sm w-fit" onclick="playNextLoop()">Skip Ad →</button>
         </div>
-      `);
+        <footer class="px-4 md:px-8 py-6 text-xs text-white/50 border-t border-white/10">
+          © WatchVIM — Powered by VIM Media
+        </footer>
+      `;
 
       const p = document.getElementById("loopAdPlayer");
-      if (!p) return;
-
-      p.addEventListener("ended", ()=>{ state.loop.playingAd=false; render(); });
-      p.addEventListener("error", ()=>{ state.loop.playingAd=false; render(); });
-    }
-
-    window.skipLoop = () => playNextLoop();
-    window.toggleLoopShuffle = () => {
-      state.loop.shuffle = !state.loop.shuffle;
-      initLoopQueue();
-      render();
-    };
-
-    // =========================================================
-    // OPTIONAL VAST PREROLL (still supported)
-    // =========================================================
-    function vastTagFor(t){
-      return t.vastTag || t.vast || t.adTagUrl || CONFIG.VAST_TAG || "";
-    }
-
-    function runVastPreroll(vastTag){
-      const wrap = document.getElementById("playerWrap");
-      if (!wrap) return;
-      const adDiv = document.createElement("div");
-      adDiv.id = "adContainer";
-      adDiv.className = "absolute inset-0 z-10";
-      wrap.appendChild(adDiv);
-
-      try {
-        const videoEl =
-          document.querySelector("#muxPlayer")?.shadowRoot?.querySelector("video") ||
-          document.getElementById("html5Player");
-        if (!videoEl) return;
-
-        const adDisplayContainer = new google.ima.AdDisplayContainer(adDiv, videoEl);
-        const adsLoader = new google.ima.AdsLoader(adDisplayContainer);
-
-        adsLoader.addEventListener(
-          google.ima.AdsManagerLoadedEvent.Type.ADS_MANAGER_LOADED,
-          (e) => {
-            const adsManager = e.getAdsManager(videoEl);
-            adsManager.init(videoEl.clientWidth, videoEl.clientHeight, google.ima.ViewMode.NORMAL);
-            adsManager.start();
-          },
-          false
-        );
-
-        const adsRequest = new google.ima.AdsRequest();
-        adsRequest.adTagUrl = vastTag;
-        adsRequest.linearAdSlotWidth = videoEl.clientWidth;
-        adsRequest.linearAdSlotHeight = videoEl.clientHeight;
-
-        adDisplayContainer.initialize();
-        adsLoader.requestAds(adsRequest);
-      } catch (err) {
-        console.warn("VAST pre-roll failed, continuing to content.", err);
+      if (p){
+        p.addEventListener("ended", ()=>{ state.loop.playingAd=false; render(); });
+        p.addEventListener("error", ()=>{ state.loop.playingAd=false; render(); });
       }
+
+      document.getElementById("skipAdBtn")?.addEventListener("click", ()=>playNextLoop());
+    }
+
+    // ---------- Modal for TVOD ----------
+    function openTVODModal(t){
+      closeModal();
+
+      const tvod = t.monetization?.tvod || {};
+      const rentPrice = tvod.rentPrice ? `$${tvod.rentPrice}` : "Rent";
+      const buyPrice  = tvod.buyPrice  ? `$${tvod.buyPrice}`  : "Buy";
+
+      const modal = document.createElement("div");
+      modal.id = "modal";
+      modal.className = "fixed inset-0 z-[999] bg-black/70 flex items-center justify-center p-4";
+      modal.innerHTML = `
+        <div class="w-full max-w-md bg-watchBlack rounded-2xl border border-white/10 p-4 space-y-3">
+          <div class="text-xl font-bold">Rent / Buy</div>
+          <div class="text-sm text-white/70">${esc(t.title)}</div>
+
+          <div class="flex gap-2">
+            <button class="tv-focus flex-1 px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20" id="rentBtn">
+              Rent (${rentPrice})
+            </button>
+            <button class="tv-focus flex-1 px-4 py-2 rounded-lg bg-watchRed font-bold hover:opacity-90" id="buyBtn">
+              Buy (${buyPrice})
+            </button>
+          </div>
+
+          <div id="paypalButtons" class="pt-2"></div>
+
+          <button class="tv-focus w-full px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20" id="closeModalBtn">
+            Cancel
+          </button>
+        </div>
+      `;
+      document.body.appendChild(modal);
+
+      document.getElementById("closeModalBtn").onclick = closeModal;
+      document.getElementById("rentBtn").onclick = ()=> startPayPalCheckout(t, "rent");
+      document.getElementById("buyBtn").onclick  = ()=> startPayPalCheckout(t, "buy");
+
+      if (isTV()) tvFocusReset();
+    }
+
+    function closeModal(){
+      document.getElementById("modal")?.remove();
     }
 
     // =========================================================
-    // TV D-PAD NAVIGATION
+    // MAIN RENDER
     // =========================================================
+    function render(){
+      const app = $app(); if (!app) return;
+
+      state.route = parseHash();
+      const r = state.route;
+
+      if (r.name === "login") {
+        loginView = r.params.mode === "signup" ? "signup" : "login";
+      }
+
+      let page = "";
+      if (r.name === "home") page = HomePage();
+      else if (r.name === "title") page = TitlePage(r.params.id);
+      else if (r.name === "series") page = SeriesPage(r.params.id);
+      else if (r.name === "episode") page = EpisodeWatchPage(r.params.seriesId, r.params.seasonIndex, r.params.epIndex, r.params.kind);
+      else if (r.name === "watch") page = WatchPage(r.params.id, r.params.kind);
+      else if (r.name === "loop") page = LoopPage();
+      else if (r.name === "login") page = LoginPage();
+      else if (r.name === "profile") page = ProfilePage();
+      else page = HomePage();
+
+      app.innerHTML = `
+        ${Header()}
+        <div class="min-h-[calc(100vh-64px)] bg-watchBlack">
+          ${page}
+        </div>
+        <footer class="px-4 md:px-8 py-6 text-xs text-white/50 border-t border-white/10">
+          © WatchVIM — Powered by VIM Media
+        </footer>
+      `;
+
+      wireGlobalClicks();
+
+      // After render: mount players if needed
+      if (r.name === "watch") {
+        const t = state.byId.get(r.params.id);
+        const pb = r.params.kind==="trailer" ? t?.trailerPlaybackId : t?.contentPlaybackId;
+        const vast = t?.vastTag || CONFIG.VAST_TAG || "";
+        if (pb) mountPlayer(pb, vast);
+      }
+      if (r.name === "episode") {
+        const ep = state.byId.get(`${r.params.seriesId}_s${Number(r.params.seasonIndex)+1}e${Number(r.params.epIndex)+1}`) || null;
+        const pb = r.params.kind==="trailer" ? ep?.trailerPlaybackId : ep?.contentPlaybackId;
+        const vast = ep?.vastTag || CONFIG.VAST_TAG || "";
+        if (pb) mountPlayer(pb, vast);
+      }
+      if (r.name === "loop") attachLoopPlayerListeners();
+
+      // TV focus reset
+      if (isTV()) tvFocusReset();
+      window.scrollTo(0,0);
+    }
+
+    function wireGlobalClicks(){
+      // nav buttons
+      document.querySelectorAll("[data-nav]").forEach(btn=>{
+        btn.addEventListener("click", ()=>navTo(btn.getAttribute("data-nav")));
+      });
+      // tabs
+      document.querySelectorAll("[data-tab]").forEach(btn=>{
+        btn.addEventListener("click", ()=>setTab(btn.getAttribute("data-tab")));
+      });
+      // tvod modal
+      document.querySelectorAll("[data-tvod]").forEach(btn=>{
+        btn.addEventListener("click", ()=>{
+          const id = btn.getAttribute("data-tvod");
+          const t = state.byId.get(id);
+          if (t) openTVODModal(t);
+        });
+      });
+      // back buttons
+      document.querySelectorAll("#backBtn").forEach(b=>{
+        b.addEventListener("click", ()=>history.back());
+      });
+      // logout
+      document.getElementById("logoutBtn")?.addEventListener("click", ()=>signOut());
+
+      // login view toggles
+      document.querySelectorAll("[data-loginview]").forEach(b=>{
+        b.addEventListener("click", ()=>{
+          loginView = b.getAttribute("data-loginview");
+          navTo(`#/login?mode=${loginView}`);
+        });
+      });
+
+      // login CTA
+      document.getElementById("loginCtaBtn")?.addEventListener("click", ()=>{
+        const isLogin = loginView==="login";
+        if (isLogin){
+          const email = document.getElementById("loginEmail")?.value.trim();
+          const pass  = document.getElementById("loginPass")?.value.trim();
+          if (!email || !pass) return alert("Enter email + password.");
+          signIn(email, pass);
+        } else {
+          const name  = document.getElementById("signupName")?.value.trim();
+          const email = document.getElementById("loginEmail")?.value.trim();
+          const pass1 = document.getElementById("loginPass")?.value.trim();
+          const pass2 = document.getElementById("signupPass2")?.value.trim();
+          if (!name) return alert("Please enter your full name.");
+          if (!email || !pass1 || !pass2) return alert("Fill out all fields.");
+          if (pass1 !== pass2) return alert("Passwords do not match.");
+          if (pass1.length < 6) return alert("Password must be at least 6 characters.");
+          signUp(email, pass1, name);
+        }
+      });
+
+      // loop controls
+      document.getElementById("skipLoopBtn")?.addEventListener("click", ()=>playNextLoop());
+      document.getElementById("toggleShuffleBtn")?.addEventListener("click", ()=>{
+        state.loop.shuffle = !state.loop.shuffle;
+        initLoopQueue();
+        render();
+      });
+    }
+
+    window.addEventListener("hashchange", render);
+
+    // ---------- TV D-pad navigation ----------
     let tvFocusIndex = 0;
     function tvFocusable(){
       return Array.from(document.querySelectorAll(".tv-focus"))
         .filter(el => !el.disabled && el.offsetParent !== null);
     }
-
     function tvFocusReset(){
       const items = tvFocusable();
       if (!items.length) return;
@@ -1377,7 +1433,6 @@
       items[0].classList.add("focus-ring");
       items[0].scrollIntoView({ block:"nearest", inline:"nearest" });
     }
-
     function tvMove(delta){
       const items = tvFocusable();
       if (!items.length) return;
@@ -1386,12 +1441,13 @@
       items[tvFocusIndex].classList.add("focus-ring");
       items[tvFocusIndex].scrollIntoView({ block:"nearest", inline:"nearest" });
     }
-
     function tvActivate(){
       const items = tvFocusable();
       const el = items[tvFocusIndex];
       if (!el) return;
-      el.click();
+      const nav = el.getAttribute("data-nav");
+      if (nav) navTo(nav);
+      else el.click();
     }
 
     window.addEventListener("keydown", (e)=>{
@@ -1410,75 +1466,16 @@
       }
     });
 
-    // =========================================================
-    // RENDER + BOOT
-    // =========================================================
-    function renderLoading(){
-      shell(`
-        <div class="min-h-screen flex flex-col items-center justify-center gap-4 bg-watchBlack">
-          <div class="animate-pulse w-16 h-16 rounded-2xl bg-white/10"></div>
-          <div class="text-white/70 text-sm">Loading WatchVIM…</div>
-        </div>
-      `);
-    }
-
-    async function render(){
-      state.route = parseHash();
-      const r = state.route;
-
-      if (r.name === "login") loginView = r.params.mode === "signup" ? "signup" : "login";
-
-      let page = "";
-      if (r.name==="home") page = HomePage();
-      else if (r.name==="tab") page = TabPage(r.params?.tab || state.activeTab);
-      else if (r.name==="title") page = TitlePage(r.params.id);
-      else if (r.name==="series") page = SeriesPage(r.params.id);
-      else if (r.name==="episode") page = EpisodeWatchPage(r.params.seriesId, r.params.seasonIndex, r.params.epIndex, r.params.kind);
-      else if (r.name==="watch") page = await WatchPage(r.params.id, r.params.kind);
-      else if (r.name==="loop") page = LoopPage();
-      else if (r.name==="login") page = LoginPage();
-      else if (r.name==="profile") page = ProfilePage();
-      else if (r.name==="search") page = SearchPage();
-      else page = HomePage();
-
-      shell(page);
-
-      if (r.name==="loop") attachLoopPlayerListeners();
-      if (r.name==="search") wireSearch();
-    }
-
-    // global for inline handlers
-    window.navTo = navTo;
-    window.setTab = setTab;
-    window.signOut = signOut;
-    window.setLoginView = setLoginView;
-    window.openTVODModal = openTVODModal;
-
-    window.handleSignIn = () => {
-      const email = document.getElementById("loginEmail")?.value.trim();
-      const password = document.getElementById("loginPass")?.value.trim();
-      if (!email || !password) return alert("Enter email + password.");
-      signIn(email, password);
-    };
-
-    window.handleSignUp = () => {
-      const email = document.getElementById("loginEmail")?.value.trim();
-      const password = document.getElementById("loginPass")?.value.trim();
-      const password2 = document.getElementById("signupPass2")?.value.trim();
-      const fullName = document.getElementById("signupName")?.value.trim();
-      if (!fullName) return alert("Please enter your full name.");
-      if (!email || !password || !password2) return alert("Fill out all fields.");
-      if (password !== password2) return alert("Passwords do not match.");
-      if (password.length < 6) return alert("Password must be at least 6 characters.");
-      signUp(email, password, fullName);
-    };
-
+    // ---------- Boot ----------
     (async function boot(){
-      await loadConfigJSON();
-      await initSupabaseIfPossible();
-      await loadData();
-      window.addEventListener("hashchange", render);
-      render();
+      try {
+        await loadConfigJSON();
+        await initSupabaseIfPossible();
+        await loadData();
+        render();
+      } catch (e){
+        renderError(e);
+      }
     })();
 
   })();
