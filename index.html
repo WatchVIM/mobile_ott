@@ -66,8 +66,8 @@
 
       // Optional TVOD / PayPal wiring (needs backend to fully enable)
       PAYPAL_CLIENT_ID: "",
-      TVOD_API_BASE: "",            // e.g. https://your-api.com
-      TVOD_CHECKOUT_URL_BASE: "",   // e.g. https://watchvim.com/checkout?tvod=1
+      TVOD_API_BASE: "",
+      TVOD_CHECKOUT_URL_BASE: "",
 
       // Optional global ads
       VAST_TAG: ""
@@ -79,7 +79,7 @@
       catalog: null,
       titles: [],
       byId: new Map(),
-      activeTab: "Home",  // ✅ default start on Home
+      activeTab: "Home",
       route: { name:"home", params:{} },
       session: null,
       user: null,
@@ -160,7 +160,7 @@
     // OPTIONAL SUPABASE AUTH
     // =========================================================
     let supabase = null;
-    let loginView = "login"; // login | signup
+    let loginView = "login";
 
     async function initSupabaseIfPossible() {
       if (!CONFIG.SUPABASE_URL || !CONFIG.SUPABASE_ANON_KEY) return;
@@ -312,6 +312,51 @@
       return state.titles.filter(TAB_FILTERS[tab] || (()=>true));
     }
 
+    // ✅ FEATURED PICKER (supports multiple CMS schemas)
+    function featuredItems(){
+      const c = state.catalog || {};
+
+      // 1) If catalog explicitly provides featured/hero arrays
+      const direct =
+        c.featuredTitles ||
+        c.featured ||
+        c.hero ||
+        c.heroItems ||
+        c.featuredItems ||
+        null;
+
+      if (Array.isArray(direct) && direct.length) {
+        // items could be full objects OR IDs OR {refId}
+        return direct.map(it => {
+          if (!it) return null;
+          if (typeof it === "string") return state.byId.get(it);
+          if (it.refId) return state.byId.get(it.refId);
+          if (it.id) return state.byId.get(it.id) || it;
+          return it;
+        }).filter(Boolean);
+      }
+
+      // 2) Otherwise infer featured from title fields
+      const inferred = state.titles.filter(t =>
+        t.isFeatured === true ||
+        t.featured === true ||
+        t.appFeatured === true ||
+        (Array.isArray(t.tags) && t.tags.some(tag => /featured/i.test(tag))) ||
+        (Array.isArray(t.genre) && t.genre.some(g => /featured/i.test(g))) ||
+        (typeof t.badge === "string" && /featured/i.test(t.badge))
+      );
+
+      return inferred;
+    }
+
+    function sortFeatured(items){
+      return items.slice().sort((a,b)=>{
+        const ao = a.featuredOrder ?? a.featuredRank ?? a.rank ?? 9999;
+        const bo = b.featuredOrder ?? b.featuredRank ?? b.rank ?? 9999;
+        return ao - bo;
+      });
+    }
+
     // =========================================================
     // SHELL (header + bottom tabs)
     // =========================================================
@@ -414,50 +459,67 @@
       `;
     }
 
-    function HeroRow(items){
+    // ✅ MULTI-SLIDE HERO CAROUSEL
+    function HeroCarousel(items){
       if (!items.length) return "";
-      const t=items[0];
-      const img=hero(t);
-      const hasTrailer=!!t.trailerPlaybackId;
-
       return `
         <section class="relative w-full overflow-hidden">
-          <div class="aspect-video md:aspect-[21/9] bg-black relative">
-            ${
-              hasTrailer
-                ? `<mux-player
-                    id="heroTrailerPlayer"
-                    stream-type="on-demand"
-                    playback-id="${esc(t.trailerPlaybackId)}"
-                    class="w-full h-full object-cover opacity-90"
-                    muted autoplay loop playsinline
-                  ></mux-player>`
-                : img
-                ? `<img src="${esc(img)}" class="w-full h-full object-cover opacity-90"/>`
-                : ""
-            }
-            <div class="absolute inset-0 bg-gradient-to-t from-watchBlack via-watchBlack/40 to-transparent"></div>
-          </div>
+          <div class="aspect-video md:aspect-[21/9] bg-black relative rounded-none">
+            <div id="heroTrack" class="flex transition-transform duration-500 ease-out">
+              ${items.map((t) => {
+                const img = hero(t);
+                const hasTrailer = !!t.trailerPlaybackId;
+                return `
+                  <div class="hero-slide min-w-full relative">
+                    ${
+                      hasTrailer
+                        ? `<mux-player
+                            stream-type="on-demand"
+                            playback-id="${esc(t.trailerPlaybackId)}"
+                            class="w-full h-full object-cover opacity-90"
+                            muted autoplay loop playsinline
+                          ></mux-player>`
+                        : img
+                        ? `<img src="${esc(img)}" class="w-full h-full object-cover opacity-90"/>`
+                        : ""
+                    }
+                    <div class="absolute inset-0 bg-gradient-to-t from-watchBlack via-watchBlack/40 to-transparent"></div>
 
-          <div class="absolute left-0 right-0 bottom-0 p-4 md:p-8">
-            <div class="max-w-3xl space-y-2">
-              <div class="text-xs uppercase tracking-widest text-watchGold/90">${typeLabel(t.type)}</div>
-              <h1 class="text-2xl md:text-4xl font-black">${esc(t.title||"Untitled")}</h1>
-              <p class="text-white/80 line-clamp-3">${esc(t.synopsis||"")}</p>
+                    <div class="absolute left-0 right-0 bottom-0 p-4 md:p-8">
+                      <div class="max-w-3xl space-y-2">
+                        <div class="text-xs uppercase tracking-widest text-watchGold/90">${typeLabel(t.type)}</div>
+                        <h1 class="text-2xl md:text-4xl font-black">${esc(t.title || "Untitled")}</h1>
+                        <p class="text-white/80 line-clamp-3">${esc(t.synopsis || "")}</p>
 
-              <div class="flex flex-wrap gap-2 text-xs text-white/70">
-                ${t.releaseYear ? `<span class="px-2 py-1 rounded bg-white/10">${esc(t.releaseYear)}</span>` : ""}
-                ${toMins(t.runtimeMins) ? `<span class="px-2 py-1 rounded bg-white/10">${toMins(t.runtimeMins)} mins</span>` : ""}
-                ${(t.genre||[]).slice(0,4).map(g=>`<span class="px-2 py-1 rounded bg-white/10">${esc(g)}</span>`).join("")}
-              </div>
+                        <div class="flex flex-wrap gap-2 text-xs text-white/70">
+                          ${t.releaseYear ? `<span class="px-2 py-1 rounded bg-white/10">${esc(t.releaseYear)}</span>` : ""}
+                          ${toMins(t.runtimeMins) ? `<span class="px-2 py-1 rounded bg-white/10">${toMins(t.runtimeMins)} mins</span>` : ""}
+                          ${(t.genre||[]).slice(0,4).map(g=>`<span class="px-2 py-1 rounded bg-white/10">${esc(g)}</span>`).join("")}
+                        </div>
 
-              <div class="pt-2 flex gap-2">
-                <button class="tv-focus px-4 py-2 rounded-lg bg-watchRed font-bold hover:opacity-90"
-                  onclick="navTo('#/${t.type==="series"?"series":"title"}/${t.id}')">View</button>
-                ${t.trailerPlaybackId?`
-                  <button class="tv-focus px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20"
-                    onclick="navTo('#/watch/${t.id}?kind=trailer')">Play Trailer</button>`:""}
-              </div>
+                        <div class="pt-2 flex gap-2">
+                          <button class="tv-focus px-4 py-2 rounded-lg bg-watchRed font-bold hover:opacity-90"
+                            onclick="navTo('#/${t.type==="series"?"series":"title"}/${t.id}')">View</button>
+                          ${t.trailerPlaybackId?`
+                            <button class="tv-focus px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20"
+                              onclick="navTo('#/watch/${t.id}?kind=trailer')">Play Trailer</button>`:""}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                `;
+              }).join("")}
+            </div>
+
+            <button id="heroPrev"
+              class="tv-focus absolute left-2 top-1/2 -translate-y-1/2 bg-black/60 px-3 py-2 rounded-full text-xl">‹</button>
+            <button id="heroNext"
+              class="tv-focus absolute right-2 top-1/2 -translate-y-1/2 bg-black/60 px-3 py-2 rounded-full text-xl">›</button>
+
+            <div id="heroDots" class="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-2">
+              ${items.map((_, i)=>`
+                <button data-hero-dot="${i}" class="tv-focus w-2.5 h-2.5 rounded-full bg-white/40"></button>
+              `).join("")}
             </div>
           </div>
         </section>
@@ -470,9 +532,10 @@
     function HomePage(){
       const all = state.titles.slice();
 
-      // --- HOME TAB: mixed content ---
       if (state.activeTab === "Home") {
-        const heroItems = all.slice(0,1);
+        // ✅ Featured only for Hero, fallback if none:
+        const featured = sortFeatured(featuredItems());
+        const heroItems = (featured.length ? featured : all).slice(0, 8);
 
         const movies = filteredTitlesForTab("Movies");
         const series = filteredTitlesForTab("Series");
@@ -498,7 +561,7 @@
           .join("");
 
         return `
-          ${HeroRow(heroItems)}
+          ${HeroCarousel(heroItems)}
           <div class="py-6 space-y-6">
             ${lastWatched.length ? Row("Continue Watching", lastWatched.slice(0,12)) : ""}
             ${Row("Top Movies & Docs", movies.slice(0,20))}
@@ -510,9 +573,8 @@
         `;
       }
 
-      // --- CATEGORY TAB: filtered content ---
       const filtered = filteredTitlesForTab(state.activeTab);
-      const heroItems = filtered.slice(0,1);
+      const heroItems = filtered.slice(0, 8);
 
       const byGenre = {};
       filtered.forEach(t=>{
@@ -529,7 +591,7 @@
         .join("");
 
       return `
-        ${HeroRow(heroItems)}
+        ${HeroCarousel(heroItems)}
         <div class="py-6 space-y-6">
           ${Row(\`Top ${state.activeTab}\`, filtered.slice(0,20))}
           ${genreRows}
@@ -593,9 +655,6 @@
     }
 
     function startTVODCheckout(titleId){
-      // Minimal client-side stub:
-      // If you provide TVOD_CHECKOUT_URL_BASE in config.json, we redirect there.
-      // Your checkout page / API should validate user + title.
       if (!CONFIG.TVOD_CHECKOUT_URL_BASE) {
         alert("TVOD checkout is not configured yet.");
         return;
@@ -755,8 +814,6 @@
       setTimeout(() => markWatched(seriesId, 0), 0);
 
       const vastTag = ep.vastTag || s.vastTag || CONFIG.VAST_TAG || "";
-
-      // Render container then mount player w/ optional VAST
       setTimeout(() => mountPlayer("episodePlayerWrap", playbackId, vastTag), 0);
 
       return `
@@ -767,7 +824,6 @@
           </div>
 
           ${CreditsBlock(ep)}
-
           <div id="episodePlayerWrap" class="aspect-video bg-black rounded-xl overflow-hidden border border-white/10"></div>
         </div>
       `;
@@ -791,7 +847,6 @@
       setTimeout(() => markWatched(id, 0), 0);
 
       const vastTag = t.vastTag || CONFIG.VAST_TAG || "";
-
       setTimeout(() => mountPlayer("watchPlayerWrap", playbackId, vastTag), 0);
 
       return `
@@ -800,7 +855,6 @@
           <div class="text-xl font-bold">${esc(t.title)}</div>
 
           ${CreditsBlock(t)}
-
           <div id="watchPlayerWrap" class="aspect-video bg-black rounded-xl overflow-hidden border border-white/10"></div>
         </div>
       `;
@@ -842,7 +896,6 @@
       wrap.style.position = "relative";
       wrap.appendChild(adDiv);
 
-      // Try to access underlying video element
       const videoEl =
         muxEl.shadowRoot?.querySelector("video") ||
         muxEl.querySelector("video");
@@ -1037,6 +1090,47 @@
     }
 
     // =========================================================
+    // HERO CAROUSEL WIRING
+    // =========================================================
+    function initHeroCarousel(){
+      const track = document.getElementById("heroTrack");
+      if (!track) return;
+
+      const slides = Array.from(track.querySelectorAll(".hero-slide"));
+      if (!slides.length) return;
+
+      let i = 0;
+      const prev = document.getElementById("heroPrev");
+      const next = document.getElementById("heroNext");
+      const dots = Array.from(document.querySelectorAll("[data-hero-dot]"));
+
+      function update(){
+        track.style.transform = `translateX(-${i * 100}%)`;
+        dots.forEach(d => {
+          const on = Number(d.dataset.heroDot) === i;
+          d.classList.toggle("bg-white", on);
+          d.classList.toggle("bg-white/40", !on);
+        });
+      }
+
+      if (prev) prev.onclick = () => { i = (i - 1 + slides.length) % slides.length; update(); };
+      if (next) next.onclick = () => { i = (i + 1) % slides.length; update(); };
+
+      dots.forEach(d => d.onclick = () => {
+        i = Number(d.dataset.heroDot) || 0;
+        update();
+      });
+
+      if (window.__heroTimer) clearInterval(window.__heroTimer);
+      window.__heroTimer = setInterval(() => {
+        i = (i + 1) % slides.length;
+        update();
+      }, 7000);
+
+      update();
+    }
+
+    // =========================================================
     // RENDERING STATES
     // =========================================================
     function renderLoading(){
@@ -1092,6 +1186,7 @@
       `;
 
       if (r.name==="search") wireSearch();
+      initHeroCarousel();
       if (isTV()) tvFocusReset();
       window.scrollTo(0,0);
     }
