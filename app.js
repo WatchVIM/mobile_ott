@@ -1,22 +1,33 @@
 /* ============================================================
-   WatchVIM Universal Mobile + TV Frontend (app.js)
-   - Reads /config.json (shared with CMS)
-   - Fetches Manifest -> Stable Catalog
-   - Routes: home, title, series, episode, watch, loop, search, login, profile
-   - TV D-pad navigation + focus ring
-   - Mobile bottom tab bar
-   - Hero UPDATED: no autoplay; click/hover preview only
-   - Monetization hooks: PayPal TVOD via backend/checkout URL
+   WatchVIM Mobile + TV Frontend (ROOT app.js)
+   Repo root:
+     /app.js
+     /config.json
+     /index.html
+     /universal/   (separate — not used here)
+
+   Features:
+   - Manifest -> Catalog loading
+   - Logo + theme from /config.json
+   - Tabs + title/series drilldowns
+   - Mux playback pages
+   - Optional Supabase auth
+   - TV D-pad focus navigation
+   - HERO: no autoplay. Click to play trailer. Hover preview desktop only.
+   - PayPal TVOD hooks (via TVOD_* config)
    ============================================================ */
 
 (() => {
   // =========================================================
-  // CONFIG
+  // CONFIG (fallbacks baked in)
   // =========================================================
   const DEFAULT_CONFIG = {
-    MANIFEST_URL: "",
-    CATALOG_URL_FALLBACK: "",
-    LOGO_URL: "",
+    MANIFEST_URL:
+      "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/manifest.json",
+    CATALOG_URL_FALLBACK:
+      "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/catalog.json",
+    LOGO_URL:
+      "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/WatchVIM%20-%20Content/WatchVIM_New_OTT_Logo.png",
 
     THEME: {
       accent: "#e11d48",
@@ -28,10 +39,8 @@
     SUPABASE_ANON_KEY: "",
 
     PAYPAL_CLIENT_ID: "",
-
     TVOD_API_BASE: "",
     TVOD_CHECKOUT_URL_BASE: "",
-
     VAST_TAG: ""
   };
 
@@ -45,7 +54,6 @@
     route: { name: "home", params: {} },
     session: null,
     user: null,
-
     loop: {
       queue: [],
       index: 0,
@@ -55,25 +63,31 @@
     }
   };
 
-  const app = document.getElementById("app") || document.body;
+  const app = document.getElementById("app");
 
   // =========================================================
   // LOAD CONFIG + APPLY THEME
   // =========================================================
   async function loadConfigJSON() {
-    try {
-      const res = await fetch("/config.json?t=" + Date.now(), { cache: "no-store" });
-      if (!res.ok) return;
-      const json = await res.json();
-      CONFIG = { ...CONFIG, ...json };
+    const paths = [
+      "/config.json?t=" + Date.now(),  // root hosting
+      "./config.json?t=" + Date.now()  // relative fallback
+    ];
 
-      const theme = CONFIG.THEME || {};
-      document.documentElement.style.setProperty("--watch-accent", theme.accent || "#e11d48");
-      document.documentElement.style.setProperty("--watch-bg", theme.background || "#0a0a0a");
-      document.documentElement.style.setProperty("--watch-gold", theme.gold || "#d4af37");
-    } catch (_) {
-      // use defaults
+    for (const p of paths) {
+      try {
+        const res = await fetch(p, { cache: "no-store" });
+        if (!res.ok) continue;
+        const json = await res.json();
+        CONFIG = { ...CONFIG, ...json };
+        break;
+      } catch (_) {}
     }
+
+    const theme = CONFIG.THEME || {};
+    document.documentElement.style.setProperty("--watch-accent", theme.accent || "#e11d48");
+    document.documentElement.style.setProperty("--watch-bg", theme.background || "#0a0a0a");
+    document.documentElement.style.setProperty("--watch-gold", theme.gold || "#d4af37");
   }
 
   // =========================================================
@@ -145,7 +159,6 @@
 
   async function initSupabaseIfPossible() {
     if (!CONFIG.SUPABASE_URL || !CONFIG.SUPABASE_ANON_KEY) return;
-
     await loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2");
     supabase = window.supabase?.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
     if (!supabase) return;
@@ -228,7 +241,7 @@
   window.addEventListener("hashchange", render);
 
   // =========================================================
-  // UTILS (schema aligned)
+  // UTILS
   // =========================================================
   function esc(str = "") {
     return String(str).replace(/[&<>"']/g, (m) => ({
@@ -440,7 +453,7 @@
   }
 
   // =========================================================
-  // HERO (NO AUTOPLAY; HOVER/CICK PREVIEW ONLY)
+  // HERO (no autoplay; click/hover only)
   // =========================================================
   function HeroRow(items) {
     if (!items.length) return "";
@@ -496,7 +509,6 @@
     `;
   }
 
-  // Hover preview on desktop only (not TV)
   function wireHeroHover() {
     if (isTV()) return;
 
@@ -619,7 +631,7 @@
   }
 
   // =========================================================
-  // TITLE / SERIES
+  // TITLE / SERIES / WATCH / SEARCH / LOGIN / LOOP
   // =========================================================
   function TitlePage(id) {
     const t = state.byId.get(id);
@@ -710,12 +722,6 @@
 
             ${CreditsBlock(s)}
 
-            <div class="flex flex-wrap gap-2 pt-2">
-              ${s.trailerPlaybackId ? `
-                <button class="tv-focus px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20"
-                  onclick="navTo('#/watch/${s.id}?kind=trailer')">Play Trailer</button>` : ""}
-            </div>
-
             <div class="pt-6 space-y-5">
               ${(s.seasons || []).map((season, si) => SeasonBlock(s, season, si)).join("") ||
                 `<div class="text-white/60 text-sm">No seasons published yet.</div>`
@@ -752,7 +758,6 @@
             E${ep.episodeNumber || epIndex + 1} — ${esc(ep.title || "Untitled")}
           </div>
           <div class="text-xs text-white/60 line-clamp-2">${esc(ep.synopsis || ep.description || "")}</div>
-          <div class="text-xs text-white/60">${toMins(ep.runtimeMins) ? `${toMins(ep.runtimeMins)} mins` : ""}</div>
 
           <div class="flex gap-2 pt-1">
             ${ep.trailerPlaybackId ? `
@@ -766,68 +771,43 @@
     `;
   }
 
-  // =========================================================
-  // WATCH PAGES
-  // =========================================================
-  function EpisodeWatchPage(seriesId, seasonIndex, epIndex, kind = "content") {
+  function WatchPage(id, kind = "content") {
+    const t = state.byId.get(id);
+    if (!t) return NotFound("Title not found");
+
+    const pb = muxIdFor(t, kind);
+    if (!pb) return NotFound(`No ${kind} playback ID set.`);
+    return `
+      <div class="p-4 md:p-8 space-y-4">
+        <button class="tv-focus text-xs text-white/70 hover:text-white" onclick="history.back()">← Back</button>
+        <div class="text-xl font-bold">${esc(t.title)}</div>
+        ${CreditsBlock(t)}
+        <div id="playerWrap" class="relative aspect-video bg-black rounded-xl overflow-hidden border border-white/10"></div>
+      </div>
+    `;
+  }
+
+  function EpisodeWatchPage(seriesId, seasonIndex, epIndex, kind="content") {
     const s = state.byId.get(seriesId);
     const season = s?.seasons?.[Number(seasonIndex)];
     const ep = season?.episodes?.[Number(epIndex)];
     if (!s || !ep) return NotFound("Episode not found");
 
     const pb = muxIdFor(ep, kind);
-    if (!pb) {
-      return `
-        <div class="p-6 space-y-3">
-          <button class="tv-focus text-xs text-white/70 hover:text-white" onclick="history.back()">← Back</button>
-          <div class="text-white/70">No ${kind} playback ID set for this episode.</div>
-        </div>
-      `;
-    }
+    if (!pb) return NotFound(`No ${kind} playback ID set for this episode.`);
 
     return `
       <div class="p-4 md:p-8 space-y-4">
         <button class="tv-focus text-xs text-white/70 hover:text-white" onclick="history.back()">← Back</button>
         <div class="text-xl font-bold">
-          ${esc(s.title)} — S${season.seasonNumber || Number(seasonIndex) + 1}E${ep.episodeNumber || Number(epIndex) + 1}
+          ${esc(s.title)} — S${season.seasonNumber||Number(seasonIndex)+1}E${ep.episodeNumber||Number(epIndex)+1}
         </div>
-
         ${CreditsBlock(ep)}
-
         <div id="playerWrap" class="relative aspect-video bg-black rounded-xl overflow-hidden border border-white/10"></div>
       </div>
     `;
   }
 
-  function WatchPage(id, kind = "content") {
-    const t = state.byId.get(id);
-    if (!t) return NotFound("Title not found");
-
-    const pb = muxIdFor(t, kind);
-    if (!pb) {
-      return `
-        <div class="p-6 space-y-3">
-          <button class="tv-focus text-xs text-white/70 hover:text-white" onclick="history.back()">← Back</button>
-          <div class="text-white/70">No ${kind} playback ID set for this title.</div>
-        </div>
-      `;
-    }
-
-    return `
-      <div class="p-4 md:p-8 space-y-4">
-        <button class="tv-focus text-xs text-white/70 hover:text-white" onclick="history.back()">← Back</button>
-        <div class="text-xl font-bold">${esc(t.title)}</div>
-
-        ${CreditsBlock(t)}
-
-        <div id="playerWrap" class="relative aspect-video bg-black rounded-xl overflow-hidden border border-white/10"></div>
-      </div>
-    `;
-  }
-
-  // =========================================================
-  // SEARCH
-  // =========================================================
   function SearchPage() {
     return `
       <div class="p-4 md:p-8 space-y-4">
@@ -857,14 +837,10 @@
       `).join("");
       if (isTV()) tvFocusReset();
     };
-
     input.addEventListener("input", e => show(e.target.value));
     show("");
   }
 
-  // =========================================================
-  // LOGIN / PROFILE
-  // =========================================================
   let loginView = "login";
   function setLoginView(view) {
     loginView = view === "signup" ? "signup" : "login";
@@ -927,16 +903,7 @@
 
   function ProfilePage() {
     if (!supabase) return NotFound("Auth not configured.");
-    if (!state.user) {
-      return `
-        <div class="p-6 max-w-md mx-auto space-y-3">
-          <div class="text-2xl font-bold">Profile</div>
-          <div class="text-white/70">You’re not logged in.</div>
-          <button class="tv-focus px-4 py-2 rounded bg-watchRed font-bold" onclick="navTo('#/login?mode=login')">Log in</button>
-        </div>
-      `;
-    }
-
+    if (!state.user) return NotFound("You’re not logged in.");
     return `
       <div class="p-6 max-w-3xl mx-auto space-y-4">
         <div class="text-2xl font-bold">Your Profile</div>
@@ -977,7 +944,7 @@
   }
 
   // =========================================================
-  // PLAYER MOUNT (Mux + optional VAST)
+  // PLAYER MOUNT + VAST
   // =========================================================
   function mountPlayer({ playbackId, vastTag, directUrl }) {
     const wrap = document.getElementById("playerWrap");
@@ -1002,10 +969,9 @@
   }
 
   function runVastPreroll(vastTag) {
+    if (!window.google?.ima) return;
     const wrap = document.getElementById("playerWrap");
     if (!wrap) return;
-
-    if (!window.google?.ima) return;
 
     const adDiv = document.createElement("div");
     adDiv.id = "adContainer";
@@ -1068,14 +1034,12 @@
       return;
     }
 
-    // Preferred: direct PayPal checkout URL
     if (CONFIG.TVOD_CHECKOUT_URL_BASE) {
       const url = `${CONFIG.TVOD_CHECKOUT_URL_BASE}?titleId=${encodeURIComponent(titleId)}&user=${encodeURIComponent(state.user.id || state.user.email)}`;
       window.open(url, "_blank");
       return;
     }
 
-    // Backend creates PayPal order and returns checkoutUrl
     if (CONFIG.TVOD_API_BASE) {
       try {
         const res = await fetch(`${CONFIG.TVOD_API_BASE}/create-order`, {
@@ -1095,9 +1059,8 @@
       return;
     }
 
-    // PayPal client ID present, but endpoints missing
     if (CONFIG.PAYPAL_CLIENT_ID) {
-      alert("PayPal is configured, but TVOD checkout endpoints are not. Add TVOD_API_BASE or TVOD_CHECKOUT_URL_BASE in config.json.");
+      alert("PayPal is configured, but TVOD checkout endpoints are not. Add TVOD_API_BASE or TVOD_CHECKOUT_URL_BASE.");
       return;
     }
 
@@ -1105,7 +1068,7 @@
   }
 
   // =========================================================
-  // LIVE / LOOP CHANNEL
+  // LOOP (LIVE)
   // =========================================================
   function shuffleArray(arr) {
     const a = arr.slice();
@@ -1269,20 +1232,6 @@
             </div>
           `}
         </div>
-
-        <div class="pt-2">
-          <div class="text-xs text-white/60 mb-2">Up Next</div>
-          <div class="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
-            ${queue.slice(0, 12).map((q, i) => `
-              <div class="min-w-[150px]">
-                <div class="aspect-[2/3] rounded-lg overflow-hidden bg-white/5 border border-white/10">
-                  ${q.poster ? `<img src="${esc(q.poster)}" class="w-full h-full object-cover"/>` : ""}
-                </div>
-                <div class="mt-1 text-xs line-clamp-2 ${i === state.loop.index ? "text-watchGold" : "text-white/80"}">${esc(q.label)}</div>
-              </div>
-            `).join("")}
-          </div>
-        </div>
       </div>
     `;
   }
@@ -1372,7 +1321,6 @@
       </footer>
     `;
 
-    // Post-render hooks
     if (r.name === "watch") {
       const t = state.byId.get(r.params.id);
       if (t) {
@@ -1451,14 +1399,13 @@
   });
 
   // =========================================================
-  // GLOBAL HANDLERS (for inline onclick)
+  // GLOBAL HANDLERS
   // =========================================================
   window.navTo = navTo;
   window.setTab = setTab;
   window.signOut = signOut;
   window.setLoginView = setLoginView;
   window.startTVODCheckout = startTVODCheckout;
-
   window.skipLoop = () => playNextLoop();
   window.toggleLoopShuffle = () => {
     state.loop.shuffle = !state.loop.shuffle;
