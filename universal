@@ -55,7 +55,7 @@
     const DEFAULT_CONFIG = {
       MANIFEST_URL: "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/manifest.json",
       CATALOG_URL_FALLBACK: "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/catalog.json",
-      LOGO_URL: "./WatchVIM_New_OTT_Logo.png",
+      LOGO_URL: "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/WatchVIM%20-%20Content/WatchVIM_New_OTT_Logo.png",
 
       SUPABASE_URL: "",
       SUPABASE_ANON_KEY: "",
