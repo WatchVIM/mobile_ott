@@ -52,18 +52,15 @@
   // =========================================================
   (() => {
     // ---------- Config ----------
-    const DEFAULT_CONFIG = {
-      MANIFEST_URL: "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/manifest.json",
-      CATALOG_URL_FALLBACK: "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/catalog.json",
-      LOGO_URL: "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/WatchVIM%20-%20Content/WatchVIM_New_OTT_Logo.png",
-
-      SUPABASE_URL: "",
-      SUPABASE_ANON_KEY: "",
-
-      PAYPAL_CLIENT_ID: "",
-      PAYPAL_CURRENCY: "USD",
-
-      VAST_TAG: ""
+   const DEFAULT_CONFIG = {
+  MANIFEST_URL: "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/manifest.json",
+  CATALOG_URL_FALLBACK: "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/catalog.json",
+  LOGO_URL: "https://t6ht6kdwnezp05ut.public.blob.vercel-storage.com/WatchVIM%20-%20Content/WatchVIM_New_OTT_Logo.png",
+  SUPABASE_URL: "",
+  SUPABASE_ANON_KEY: "",
+  PAYPAL_CLIENT_ID: "",
+  TVOD_API_BASE: "",
+  VAST_TAG: ""
     };
     let CONFIG = { ...DEFAULT_CONFIG };
     let supabase = null;
