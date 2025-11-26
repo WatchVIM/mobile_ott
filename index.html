@@ -1,65 +1,61 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>WatchVIM</title>
+  <head>
+    <meta charset="UTF-8" />
+    <title>WatchVIM — Streaming Platform</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <!-- Tailwind (CDN) -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            watchBlack: "#0a0a0a",
-            watchRed: "#e50914",
-            watchGold: "#d4af37"
+    <!-- Tailwind CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              watchBlack: "#0a0a0a",
+              watchRed: "#e11d48",
+              watchGold: "#d4af37"
+            }
           }
         }
+      };
+    </script>
+
+    <!-- Base styles for TV focus + scrollbars -->
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background-color: #0a0a0a;
+        color: #fff;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
-    }
-  </script>
+      .no-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+      .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+      .focus-ring {
+        outline: 2px solid #e11d48;
+        outline-offset: 2px;
+      }
+      .safe-bottom {
+        padding-bottom: env(safe-area-inset-bottom);
+      }
+    </style>
 
-  <!-- Mux Player web component -->
-  <script type="module" src="https://cdn.jsdelivr.net/npm/@mux/mux-player@2/+esm"></script>
+    <!-- Mux Player for video playback -->
+    <script src="https://unpkg.com/@mux/mux-player"></script>
 
-  <!-- Optional Google IMA SDK for VAST -->
-  <script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"></script>
+    <!-- Google IMA SDK (optional, for VAST ads) -->
+    <script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"></script>
+  </head>
+  <body class="bg-watchBlack text-white">
+    <div id="app" class="min-h-screen flex flex-col"></div>
 
-  <style>
-    :root{
-      --watch-accent:#e11d48;
-      --watch-bg:#0a0a0a;
-      --watch-gold:#d4af37;
-    }
-    body {
-      background: var(--watch-bg);
-      color:#fff;
-      margin:0;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-    }
-    .focus-ring { outline: 3px solid var(--watch-accent); outline-offset: 2px; border-radius: 12px; }
-    .row-scroll { scroll-snap-type: x mandatory; }
-    .tile { scroll-snap-align: start; }
-    .hidden { display:none !important; }
-    .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
-    .no-scrollbar::-webkit-scrollbar { display:none; }
-    .no-scrollbar { -ms-overflow-style:none; scrollbar-width:none; }
-    .line-clamp-1,.line-clamp-2,.line-clamp-3{
-      display:-webkit-box; -webkit-box-orient:vertical; overflow:hidden;
-    }
-    .line-clamp-1{ -webkit-line-clamp:1; }
-    .line-clamp-2{ -webkit-line-clamp:2; }
-    .line-clamp-3{ -webkit-line-clamp:3; }
-  </style>
-</head>
-
-<body class="min-h-screen bg-watchBlack text-white">
-  <!-- App Mount -->
-  <div id="app" class="min-h-screen flex flex-col"></div>
-
-  <!-- Frontend SPA Logic (ROOT) -->
-  <script src="./app.js" defer></script>
-</body>
+    <!-- Main App JS -->
+    <script src="./app.js"></script>
+  </body>
 </html>
