@@ -55,8 +55,8 @@
   // =========================================================
   async function loadConfigJSON() {
     const paths = [
-      "/config.json?t=" + Date.now(), // root hosting
-      "./config.json?t=" + Date.now(), // relative fallback
+      "/config.json?t=" + Date.now(),
+      "./config.json?t=" + Date.now(),
     ];
 
     for (const p of paths) {
@@ -246,6 +246,8 @@
     if (parts[0] === "login")
       return { name: "login", params: { mode: query.mode || "login" } };
     if (parts[0] === "profile") return { name: "profile", params: {} };
+    if (parts[0] === "legal" && parts[1])
+      return { name: "legal", params: { slug: parts[1] } };
 
     return { name: "home", params: {} };
   }
@@ -495,7 +497,6 @@
     const loggedIn = isLoggedIn();
     const target = loggedIn ? href : "#/login?mode=signup";
 
-    // Poster size tweak: bigger on mobile, consistent 2:3 ratio
     return `
       <button class="tile tv-focus w-[46vw] sm:w-[32vw] md:w-[180px] max-w-[200px] text-left" onclick="navTo('${target}')">
         <div class="aspect-[2/3] rounded-xl overflow-hidden bg-white/5 border border-white/10">
@@ -834,6 +835,46 @@
   }
 
   // =========================================================
+  // LEGAL PAGES (terms, privacy, refund)
+  // =========================================================
+  function LegalPage(slug) {
+    const key = (slug || "").toLowerCase();
+    const titleMap = {
+      terms: "Terms of Use",
+      privacy: "Privacy Policy",
+      refund: "Refund Policy",
+    };
+
+    const title = titleMap[key];
+    if (!title) return NotFound("Page not found");
+
+    const description =
+      key === "terms"
+        ? "These Terms of Use govern your access to and use of the WatchVIM service, including apps, website, and video content."
+        : key === "privacy"
+        ? "This Privacy Policy explains how WatchVIM collects, uses, and protects your information when you use our services."
+        : "This Refund Policy describes when a subscription or transaction on WatchVIM may be eligible for a refund.";
+
+    return `
+      <div class="p-6 md:p-10 max-w-4xl mx-auto space-y-4">
+        <button class="tv-focus text-xs text-white/70 hover:text-white" onclick="history.back()">← Back</button>
+        <h1 class="text-2xl md:text-3xl font-black">${esc(title)}</h1>
+        <p class="text-sm text-white/70 max-w-2xl">${esc(description)}</p>
+
+        <div class="mt-4 space-y-3 text-sm leading-relaxed text-white/80 text-left">
+          <p>
+            This page is provided for informational purposes. For finalized legal language, please consult your legal counsel and update this copy accordingly.
+          </p>
+          <p>
+            If you are a customer with questions about your account, subscription, or billing history, please contact support at
+            <span class="font-mono">streaming@watchvim.com</span>.
+          </p>
+        </div>
+      </div>
+    `;
+  }
+
+  // =========================================================
   // TITLE / SERIES / WATCH / SEARCH / LOGIN / LOOP
   // =========================================================
   function TitlePage(id) {
@@ -925,7 +966,6 @@
     const tvod = monet.tvod || {};
     const loggedIn = isLoggedIn();
 
-    // Global paywall: must be logged in to watch anything
     if (!loggedIn) {
       if (tvod.enabled) {
         return `<button class="tv-focus px-4 py-2 rounded-lg bg-watchRed font-bold"
@@ -940,7 +980,6 @@
         onclick="startTVODCheckout('${t.id}')">Rent / Buy</button>`;
     }
 
-    // Logged in, non-TVOD content
     return `<button class="tv-focus px-4 py-2 rounded-lg bg-watchRed font-bold hover:opacity-90"
       onclick="navTo('#/watch/${t.id}?kind=content')">Watch Now</button>`;
   }
@@ -1690,9 +1729,7 @@
         </div>
       </div>
       ${MobileTabBar()}
-      <footer class="px-4 md:px-8 py-6 text-xs text-white/50 border-t border-white/10">
-        © WatchVIM — Powered by VIM Media
-      </footer>
+      ${Footer()}
     `;
 
     const p = document.getElementById("loopAdPlayer");
@@ -1705,6 +1742,24 @@
       state.loop.playingAd = false;
       render();
     });
+  }
+
+  // =========================================================
+  // FOOTER (shared)
+  // =========================================================
+  function Footer() {
+    return `
+      <footer class="px-4 md:px-8 py-6 text-xs text-white/50 border-t border-white/10">
+        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+          <div>© WatchVIM — Powered by VIM Media</div>
+          <div class="flex flex-wrap gap-3">
+            <button class="tv-focus hover:text-white text-white/60" onclick="navTo('#/legal/terms')">Terms</button>
+            <button class="tv-focus hover:text-white text-white/60" onclick="navTo('#/legal/privacy')">Privacy</button>
+            <button class="tv-focus hover:text-white text-white/60" onclick="navTo('#/legal/refund')">Refund Policy</button>
+          </div>
+        </div>
+      </footer>
+    `;
   }
 
   // =========================================================
@@ -1733,6 +1788,7 @@
     else if (r.name === "search") page = SearchPage();
     else if (r.name === "login") page = LoginPage();
     else if (r.name === "profile") page = ProfilePage();
+    else if (r.name === "legal") page = LegalPage(r.params.slug);
     else page = HomePage();
 
     app.innerHTML = `
@@ -1741,9 +1797,7 @@
         ${page}
       </main>
       ${MobileTabBar()}
-      <footer class="px-4 md:px-8 py-6 text-xs text-white/50 border-t border-white/10">
-        © WatchVIM — Powered by VIM Media
-      </footer>
+      ${Footer()}
     `;
 
     if (r.name === "watch" && isLoggedIn()) {
