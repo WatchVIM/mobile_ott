@@ -20,10 +20,10 @@
       gold: "#d4af37",
     },
 
-    SUPABASE_URL: "",
-    SUPABASE_ANON_KEY: "",
+    SUPABASE_URL: "https://oxqneksxmwopepchkatv.supabase.co",
+    SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im94cW5la3N4bXdvcGVwY2hrYXR2Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MzYzMDU1MSwiZXhwIjoyMDc5MjA2NTUxfQ.lLOT8Vw_L9spAvHPYDcAThuqEXzcWlmaz1A9TKECjrQ",
 
-    PAYPAL_CLIENT_ID: "",
+    PAYPAL_CLIENT_ID: "AUFfmeZGU-xTkePa3gGRDOmartF-6kfATCybQMKq0_R0ZT7K5ZcjbNAtadN65gMKEi_4lcjFWnLv7SHV",
     TVOD_API_BASE: "",
     TVOD_CHECKOUT_URL_BASE: "",
     VAST_TAG: "",
